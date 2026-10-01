@@ -1,4 +1,4 @@
-# Makefile — the local quality gate template (warehouse-harness-template v1).
+# Makefile — the local quality gate template (warehouse-harness-template v2).
 #
 # Every target below mirrors a sensor in .github/workflows/ci.yml, so the
 # same feedback CI gives you post-push is available locally, pre-commit.

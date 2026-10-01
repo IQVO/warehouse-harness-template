@@ -4,7 +4,7 @@
 // dependencies point inward only, and inbound/outbound adapters never
 // depend on each other.
 //
-// TEMPLATE NOTE (warehouse-harness-template v1): replace modulePath below
+// TEMPLATE NOTE (warehouse-harness-template v2): replace modulePath below
 // with this repo's real module path. The 6 rules in TestHexagonalArchitecture
 // are universal across every bounded-context service in the fleet -- keep
 // them verbatim. If this repo has an analytics read-model region
