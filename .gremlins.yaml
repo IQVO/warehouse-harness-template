@@ -1,4 +1,4 @@
-# .gremlins.yaml — mutation-testing configuration template (warehouse-harness-template v1).
+# .gremlins.yaml — mutation-testing configuration template (warehouse-harness-template v2).
 #
 # gremlins (github.com/go-gremlins/gremlins, pinned to v0.6.0 in CI) reads
 # this file automatically from the Go module root, so the `mutation-fast`

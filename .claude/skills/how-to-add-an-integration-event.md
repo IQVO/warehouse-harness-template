@@ -1,4 +1,4 @@
-<!-- TEMPLATE NOTE (warehouse-harness-template v1): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
+<!-- TEMPLATE NOTE (warehouse-harness-template v2): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
 
 # How to add an integration event (publish and consume)
 
@@ -21,27 +21,37 @@ sibling context genuinely needs to react to it — check
 `docs/docs/ddd/context-map.md` or the equivalent ubiquitous-language doc
 for who's actually downstream.
 
-### 2. Envelope: CloudEvents 1.0, structured mode
+### 2. Envelope: CloudEvents 1.0, structured mode — MANDATORY
 
-Every message is a CloudEvents 1.0 JSON document
-(`application/cloudevents+json`). The context attributes carry routing:
+Every message is a CloudEvents 1.0 JSON document in structured content
+mode (Kafka value = `application/cloudevents+json`), with the Kafka header
+`content-type: application/cloudevents+json; charset=UTF-8`. There is no
+other envelope in this fleet — no flat `event_id`/`event_type`/`occurred_at`
+shape, no dual-write, no `EVENT_ENVELOPE_MODE` toggle (see
+`.claude/rules/integration-events.md`; a fitness test enforces it).
 
 ```json
 {
-  "event_id": "<uuid>",
-  "event_type": "com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>",
-  "occurred_at": "<RFC3339>",
-  "source": "<bounded-context-slug>",
-  "data": { /* the actual payload, business types only */ }
+  "specversion": "1.0",
+  "id": "<uuid v4, minted once, persisted with the outbox row>",
+  "source": "/warehouse/<repo>",
+  "type": "com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>",
+  "subject": "<aggregate id>",
+  "time": "<domain occurred-at, RFC3339 UTC>",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:<repo>:events:<EventName>:v1",
+  "data": { "the": "actual payload, business types only" }
 }
 ```
 
-The `type`/`event_type` follows the platform-wide reverse-DNS convention:
+`type` follows the platform-wide reverse-DNS convention
 `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`, all
 lowercase except the final PascalCase event name — e.g.
-`com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`. Get
-the subdomain (`wms`/`wes`/`wcs`/etc.) from this repo's own
-`apis/asyncapi.yaml` intro section; don't guess it.
+`com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`. Take
+the subdomain/context segment from the subdomain table on warehouse-docs'
+Event Standard page (`docs/strategic-design/event-standard-cloudevents.md`);
+don't guess it. The same `type` is used on the analytics topic; only
+`dataschema` changes (`…:analytics:<EventName>:v1`).
 
 ### 3. Implementation
 
@@ -50,17 +60,37 @@ exist as a domain event the aggregate raises — publishing wires an
 EXISTING domain event onto Kafka, it doesn't invent a new payload shape at
 the adapter layer). In the Kafka publisher adapter:
 
-- Add the event's marshal-to-envelope case
+- Encode ONLY through `internal/adapters/kafka/cloudevents` (copied from
+  this template's `templates/cloudevents/cloudevents.go.tmpl`):
+  ```go
+  value, err := cloudevents.New(cloudevents.Spec{
+      ID:        evt.ID(),            // minted once; the outbox row stores it
+      Entity:    "reservation",
+      EventName: "ReservationRevoked",
+      Subject:   evt.ReservationID(),
+      Time:      evt.OccurredAt(),
+      Stream:    cloudevents.StreamEvents,
+      Version:   1,
+      Data:      payload,              // unchanged wire payload
+  })
+  msg := kafkago.Message{
+      Key:     []byte(evt.ReservationID()),
+      Value:   value,
+      Headers: append(traceHeaders, cloudevents.ContentTypeHeader()),
+  }
+  ```
 - Give the message a partition key that keeps ordering where it matters
-  (usually the aggregate id)
+  (the aggregate id) and keep the `kafkago.Hash{}` balancer
 - Use `Topic` — this service's own topic constant
   (`warehouse.<context>.events`), never a sibling's
 
 ### 4. Contract + docs
 
-- Add the message to `apis/asyncapi.yaml` under this service's channel,
-  matching the entity-grouping convention already there (group by
-  aggregate, not chronologically)
+- Add the message to `apis/asyncapi.yaml` under this service's channel
+  (`defaultContentType: application/cloudevents+json`, the shared
+  CloudEvents envelope schema with every attribute required), with its
+  exact `type` const and `dataschema`, matching the entity-grouping
+  convention already there (group by aggregate, not chronologically)
 - Regenerate the AsyncAPI HTML reference:
   ```bash
   cd docs && npm run gen-async-docs:all   # or gen-async-docs, check package.json
@@ -71,8 +101,10 @@ the adapter layer). In the Kafka publisher adapter:
 
 ### 5. Test
 
-Unit test the marshal shape against a fake `Writer` (see
-`publisher_test.go` — never a real broker in a unit test). If this event
+Add a golden exact-JSON unit test for the new `type` asserting every
+CloudEvents attribute, the `type` string and the `content-type` header,
+against a fake `Writer` (see `publisher_test.go` — never a real broker in
+a unit test). If this event
 now needs a `_integration_test.go` asserting real delivery, it MUST use
 testcontainers (see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
 in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test or a
@@ -82,8 +114,8 @@ hardcoded `localhost:9092` fails CI).
 
 ### 1. Never import the sibling's Go packages
 
-This service knows a sibling's topic name and payload shape ONLY — never
-its Go types. See `internal/adapters/outbound/facilitycache/consumer.go`'s
+This service knows a sibling's topic name, its exact CloudEvents `type`
+strings and payload shape ONLY — never its Go types. See `internal/adapters/outbound/facilitycache/consumer.go`'s
 own doc comment: "This service has no business knowing anything else
 about that context beyond this topic name and the envelope/payload shapes
 below." Hand-mirror the payload struct locally; do not add a Go module
@@ -93,7 +125,31 @@ check this repo's own `internal/architecture/` for a
 `TestNoSiblingContextOutboundCalls`-style guard before assuming it's
 allowed).
 
-### 2. Choose the right consumer-group pattern — this is the part that bites
+### 2. Decode CloudEvents only, dispatch on the full `type`
+
+```go
+evt, err := cloudevents.Decode(msg.Value)
+if err != nil { // errors.Is(err, cloudevents.ErrNotCloudEvent): deterministic poison
+    // existing DLQ path if this consumer has one, else:
+    logger.Warn("skipping non-CloudEvents message", "topic", msg.Topic,
+        "partition", msg.Partition, "offset", msg.Offset, "err", err)
+    return commit(msg) // never crash, never block the partition
+}
+switch evt.Type() {
+case "com.warehouse.wes.fulfillment-execution.task.TaskCompleted": // exact, byte-identical to the producer
+    var p taskCompletedData // local mirror of the payload
+    if err := evt.DataAs(&p); err != nil { /* poison: skip as above */ }
+    // dedupe on evt.ID(); use evt.Time() / evt.Subject() from attributes
+default:
+    return commit(msg) // unknown types are ignored, not errors
+}
+```
+
+Never parse a legacy flat shape as a fallback, never dispatch on a short
+name or suffix match. Add a test that a legacy flat-envelope message is
+rejected (skipped/DLQ'd), not parsed.
+
+### 3. Choose the right consumer-group pattern — this is the part that bites
 
 Two DIFFERENT correct patterns exist. Picking the wrong one for your use
 case is THE most common integration-event mistake in this fleet, and it
@@ -129,7 +185,7 @@ a literal string. This fleet's `internal/architecture/`
 `TestKafkaConsumerGroupNeverHardcodedInline` fitness test (where present)
 enforces this statically — an inline `GroupID: "literal"` fails CI.
 
-### 3. Readiness gate, if this consumer backs a local cache
+### 4. Readiness gate, if this consumer backs a local cache
 
 If the consumer replays a topic's full history to build a cache other
 code depends on, expose a `Ready()` gate the health check consults, and

@@ -1,6 +1,6 @@
 # warehouse-harness-template
 
-Canonical `harness-template: v1` for the [warehouse-systems](https://github.com/claudioed)
+Canonical `harness-template: v2` for the [warehouse-systems](https://github.com/claudioed)
 fleet's Go bounded-context services: `Makefile`, CI workflow, lefthook
 hooks, linter/mutation-testing config, architecture fitness tests
 (hexagonal dependency rules + fleet-wide invariants learned from real
@@ -21,8 +21,13 @@ architecture fitness test was written to prevent from recurring.
 git clone https://github.com/claudioed/warehouse-harness-template <new-repo>
 cd <new-repo>
 rm -rf .git && git init
-bash scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg>
+bash scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg> [<wms|wes> <event-context>]
 ```
+
+Kafka-publishing/consuming services pass the last two arguments: the
+script then generates the fleet-mandatory CloudEvents 1.0 helper
+(`internal/adapters/kafka/cloudevents/`). CloudEvents is the only event
+envelope in this fleet — there is no flat/dual mode to configure.
 
 See `scripts/new-service.sh`'s header comment, or `HARNESS.md`'s
 "Instantiating this template" section, for the full checklist —

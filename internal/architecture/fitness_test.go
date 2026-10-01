@@ -4,9 +4,10 @@
 // incident somewhere in the warehouse-systems fleet. See HARNESS.md's
 // "fitness functions" section for the full incident list.
 //
-// TEMPLATE NOTE (warehouse-harness-template v1): TestNoAuthMiddlewareReintroduced,
-// TestKafkaConsumerGroupNeverHardcodedInline and
-// TestKafkaIntegrationTestsUseTestcontainers are universal -- keep them
+// TEMPLATE NOTE (warehouse-harness-template v2): TestNoAuthMiddlewareReintroduced,
+// TestKafkaConsumerGroupNeverHardcodedInline,
+// TestKafkaIntegrationTestsUseTestcontainers and
+// TestNoEventEnvelopeToggleOrFlatEnvelope are universal -- keep them
 // verbatim (they don't reference modulePath or any repo-specific literal).
 // TestMCPAdapterDependencyRule is CONDITIONAL: only port it if this repo
 // has an internal/adapters/inbound/mcp package. If this repo is one of the
@@ -324,4 +325,67 @@ func assertKafkaIntegrationTestFollowsFleetRules(t *testing.T, path, content str
 	if !strings.Contains(content, "testcontainers-go/modules/kafka") {
 		t.Errorf("%s: touches Kafka but does not import github.com/testcontainers/testcontainers-go/modules/kafka — Kafka-touching integration tests in this fleet must start their own broker via testcontainers, never assume/skip on an external one", path)
 	}
+}
+
+// envelopeToggleRE matches the identifiers of the retired envelope
+// toggle (fleet-wide CloudEvents cutover, 2026-09-30): the env var and the
+// Go names every repo used for its flat/dual/cloudevents switch.
+var envelopeToggleRE = regexp.MustCompile(`EVENT_ENVELOPE_MODE|\bEnvelopeMode\b|\bParseEnvelopeMode\b`)
+
+// flatEnvelopeTagRE matches the struct tags of the retired flat envelope
+// (`event_id` / `event_type` / `occurred_at` at the TOP level of the Kafka
+// message). A file carrying both the id and the type tag is a hand-rolled
+// flat envelope struct; a payload that merely has an `occurred_at` field
+// inside CloudEvents `data` does not match on its own.
+var (
+	flatEnvelopeIDTagRE   = regexp.MustCompile("json:\"event_id[\",]")
+	flatEnvelopeTypeTagRE = regexp.MustCompile("json:\"event_type[\",]")
+)
+
+// TestNoEventEnvelopeToggleOrFlatEnvelope encodes the fleet-wide rule that
+// CloudEvents 1.0 (structured mode, built only through
+// internal/adapters/kafka/cloudevents) is the ONLY Kafka event envelope:
+// no flat envelope, no dual-write/dual-read, no EVENT_ENVELOPE_MODE (or any
+// other) envelope toggle. Every repo carried a flat envelope struct and
+// several carried a dual-mode toggle before the cutover; an agent
+// "helpfully" re-adding either for "backward compatibility" must fail CI.
+// Scans non-comment, non-test Go source under internal/ and cmd/.
+func TestNoEventEnvelopeToggleOrFlatEnvelope(t *testing.T) {
+	files := append(goFilesUnder(t, "..", false), goFilesUnder(t, "../../cmd", false)...)
+	for _, path := range files {
+		hasIDTag, hasTypeTag := scanEnvelopeRules(t, path)
+		if hasIDTag && hasTypeTag {
+			t.Errorf("%s: declares a flat event envelope (json \"event_id\" + \"event_type\" tags) — CloudEvents 1.0 is the only envelope in this fleet; build/decode with internal/adapters/kafka/cloudevents (sdk-go v2 event package) instead", path)
+		}
+	}
+}
+
+// scanEnvelopeRules reports toggle identifiers as test errors line by line
+// and returns whether the file declares the flat envelope's id/type tags.
+func scanEnvelopeRules(t *testing.T, path string) (hasIDTag, hasTypeTag bool) {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	lineNo := 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		if envelopeToggleRE.MatchString(line) {
+			t.Errorf("%s:%d: references an event-envelope toggle: %q — there is no flat/dual mode; CloudEvents 1.0 is mandatory and unconditional", path, lineNo, strings.TrimSpace(line))
+		}
+		hasIDTag = hasIDTag || flatEnvelopeIDTagRE.MatchString(line)
+		hasTypeTag = hasTypeTag || flatEnvelopeTypeTagRE.MatchString(line)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", path, err)
+	}
+	return hasIDTag, hasTypeTag
 }
