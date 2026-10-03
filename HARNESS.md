@@ -1,4 +1,4 @@
-# HARNESS.md — warehouse-harness-template v2
+# HARNESS.md — warehouse-harness-template v3
 
 This file is the canonical description of every sensor and guide in this
 template: what it does, what it costs, and when in the change lifecycle it
@@ -141,11 +141,48 @@ manual content (the `.claude/rules/*.md` skeletons, `.gremlins.yaml`'s
 measured thresholds). See `scripts/new-service.sh`'s own header comment for
 the full instantiation checklist.
 
+## Agent runtime harness (v3): one logic, three runtimes
+
+v3 makes the guides LOAD and puts sensors INSIDE the agent loop, for Claude Code, OpenCode and Codex.
+
+| Piece | File(s) | Cost | Lifecycle position |
+|---|---|---|---|
+| Skills that actually load | `.claude/skills/<name>/SKILL.md` (frontmatter `name`+`description`); `.agents/skills` symlink for Codex; OpenCode scans `.claude/skills` natively | ~50 tokens each until used | on task match |
+| Review skills (explicit) | `code-review`, `architecture-review`, `domain-review` (`disable-model-invocation`) | LLM | on demand, pre-merge |
+| Path-scoped rules | `.claude/rules/*.md` with `paths:`; CLAUDE.md carries a generated pointer table for runtimes without scoping | tokens only when matching files are touched | on edit |
+| Guard + feedback hooks | `scripts/harness/hook.py` (`pre` / `post` / `stop`) + adapters `.claude/settings.json`, `.codex/hooks.json`, `.opencode/plugins/harness.ts` | ms to seconds | every tool call; end of turn |
+| Fast gate | `make check-fast` (fmt-check, vet, arch-test, tests of changed packages) | seconds | Stop hook, before "done" |
+| Guide freshness | `scripts/harness/guide_lint.py` / `make guide-lint` (CI job `guide-lint`) | CPU, ms | PR |
+| Red-sensor loop | `scripts/harness/red_issue.py` steps in scheduled jobs -> `harness:red` issue | none | weekly |
+| Advisory AI review | `.github/workflows/ai-review.yml` (needs `ANTHROPIC_API_KEY`; no-ops without it) | API spend | PR into develop |
+| Health report | `scripts/harness-health.py` (does it WORK: skills load, hooks wired, scheduled runs green) | gh calls | weekly cron |
+
+Rules live ONLY in `hook.py`; the three adapters translate events and cannot drift. The hooks block
+pushes to develop/main, `--no-verify`, force-push, `rm -rf` on non-scratch paths, destructive git, and
+edits to generated files; they feed gofmt/vet findings back after each edit. Every message states
+WHAT / WHY / FIX. `HARNESS_PROTECT_THRESHOLDS=1` (fix-agent mode) additionally forbids editing gates
+(`.gremlins.yaml`, `.golangci.yml`, `internal/architecture/**`, CI). `HARNESS_OFF=1` disables the lot.
+
+Runtime notes (verified against real runs, 2026-10-03):
+- Claude Code: hooks run in any trusted workspace; project `permissions.allow` is ignored until the user
+  accepts the workspace trust dialog once.
+- Codex: project hooks run only after the user trusts them once (`/hooks`), or per run with
+  `--dangerously-bypass-hook-trust` (+ `--enable hooks`, project trusted). Codex may write files through
+  shell heredocs rather than `apply_patch`, so the PostToolUse gofmt feedback can be skipped; the Stop
+  gate (`make check-fast`) and lefthook are the backstop.
+- OpenCode 2.x: the plugin uses `ctx.permission.hook("evaluate")` (deny) and `ctx.tool.hook`; the 1.x
+  `server()` hooks are exported from the same file. The idle -> re-prompt stop gate is best-effort.
+
+Template tooling that must NOT be copied into an instantiated service: `tools/` (`migrate_v3.py`, brings an
+existing repo to v3), `scripts/harness-audit.py`, `scripts/harness-health.py`, `scripts/new-service.sh`.
+Run `python3 tools/migrate_v3.py --repo <path>` to (re)apply the managed files to an existing service; it is
+idempotent and is also the engine of the weekly template sync.
+
 ## Versioning
 
-This is `harness-template: v2` (v2 = CloudEvents 1.0 mandatory: the
-generated helper, the rewritten integration-events rule/skill, and the new
-blocking `TestNoEventEnvelopeToggleOrFlatEnvelope`). Record that string in each instantiated
-repo's `AGENTS.md` so a fleet-wide audit (see the `harness-audit` tool in
-the companion `warehouse-systems-fleet-ops` skill) can tell which repos are
+This is `harness-template: v3` (v3 = agent runtime harness: loadable skills, hooks for Claude Code / Codex /
+OpenCode, guide-lint, red-issue loop; builds on v2 = CloudEvents 1.0 mandatory: the
+generated helper, the rewritten integration-events rule/skill, and the
+blocking `TestNoEventEnvelopeToggleOrFlatEnvelope`). Record `harness-template: v3` in each instantiated
+repo's `AGENTS.md` so a fleet-wide audit (see `scripts/harness-audit.py` / `scripts/harness-health.py`) can tell which repos are
 behind the template and by how much.

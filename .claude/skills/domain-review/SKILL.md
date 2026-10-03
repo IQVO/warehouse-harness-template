@@ -1,3 +1,10 @@
+---
+name: domain-review
+description: Ubiquitous-language drift review of a change against .claude/rules/domain-model.md: renamed or invented terms, aggregate-invariant leaks. Invoke explicitly: /domain-review [range].
+disable-model-invocation: true
+argument-hint: "[git range]"
+---
+
 <!-- TEMPLATE NOTE (warehouse-harness-template v2): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
 
 Perform a ubiquitous-language drift review of the current changes (or

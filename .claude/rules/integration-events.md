@@ -1,3 +1,10 @@
+---
+paths:
+  - "internal/adapters/**/kafka/**"
+  - "internal/adapters/outbound/events/**"
+  - "apis/asyncapi*"
+---
+
 <!-- TEMPLATE (warehouse-harness-template v2): fill in every "FILL IN" for
      THIS repo, or delete this file if the repo publishes/consumes no Kafka
      events. The "CloudEvents 1.0 is MANDATORY" section is NOT a
