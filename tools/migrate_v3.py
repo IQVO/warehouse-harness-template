@@ -42,6 +42,7 @@ MANAGED = [
     "scripts/harness/test_hook.py",
     "scripts/harness/guide_lint.py",
     "scripts/harness/red_issue.py",
+    "scripts/harness/fleet_drift.py",
     ".claude/settings.json",
     ".codex/hooks.json",
     ".opencode/plugins/harness.ts",
@@ -194,7 +195,15 @@ class Migrator:
 
     # 4 ---------------------------------------------------------------------
     def managed(self):
-        for rel in MANAGED:
+        rels = list(MANAGED)
+        if self.profile == "service":
+            # Go-service-only: fleet knowledge (canonical copy: warehouse-docs/agents/fleet/) + arch-test helper
+            fleet = os.path.join(self.template, ".claude/rules/fleet")
+            if os.path.isdir(fleet):
+                rels += [".claude/rules/fleet/" + f for f in sorted(os.listdir(fleet)) if f.endswith(".md")]
+        else:
+            rels = [r for r in rels if not r.startswith("internal/")]
+        for rel in rels:
             src = os.path.join(self.template, rel)
             if not os.path.isfile(src):
                 self.say(f"WARN template lacks {rel}")
