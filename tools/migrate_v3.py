@@ -47,7 +47,8 @@ MANAGED = [
     ".codex/hooks.json",
     ".opencode/plugins/harness.ts",
     ".github/workflows/ai-review.yml",
-    "internal/architecture/violation_test.go",  # archViolation: WHAT/WHY/FIX for arch-test failures
+    "internal/architecture/violation_test.go",
+    "internal/architecture/events_fitness_test.go",  # CloudEvents-only + replay CommitInterval  # archViolation: WHAT/WHY/FIX for arch-test failures
 ]
 SYMLINKS = {".agents/skills": "../.claude/skills"}
 
