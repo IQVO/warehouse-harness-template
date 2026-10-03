@@ -107,9 +107,11 @@ def sh(args, cwd, check=True):
 
 
 class Migrator:
-    def __init__(self, repo, template, dry, keep_notes=False):
+    def __init__(self, repo, template, dry, keep_notes=False, profile="service", fast_deps="", sched=None):
         self.repo, self.template, self.dry = os.path.abspath(repo), os.path.abspath(template), dry
         self.keep_notes = keep_notes
+        self.profile, self.fast_deps = profile, fast_deps
+        self.sched = sched or []  # ["workflow.yml:job", ...] extra scheduled jobs that get red-issue steps
         self.log: list[str] = []
 
     def p(self, *a):
@@ -213,6 +215,8 @@ class Migrator:
 
     # 5 ---------------------------------------------------------------------
     def makefile(self):
+        if self.profile == "platform":
+            return self.makefile_platform()
         if not os.path.isfile(self.p("Makefile")):
             self.say("no Makefile: skipping make targets")
             return
@@ -234,6 +238,25 @@ class Migrator:
         )
         self.say("Makefile: + check-fast guide-lint harness-test")
         self.write("Makefile", text.rstrip("\n") + "\n" + block)
+
+    def makefile_platform(self):
+        """Non-Go platform repos (infra, e2e, console, ui-kit): check-fast = the repo's own fast checks."""
+        text = self.read("Makefile") if os.path.isfile(self.p("Makefile")) else ""
+        if "check-fast:" in text:
+            return
+        deps = self.fast_deps.strip()
+        block = (
+            "\n# --- agent harness (harness-template v3) -----------------------------------\n"
+            ".PHONY: check-fast guide-lint harness-test\n"
+            "# Fast local gate used by the agent Stop hook (this repo's own quick checks).\n"
+            f"check-fast: {deps}\n\n"
+            "guide-lint: ## lint agent guides: skills load, references resolve, context budget\n"
+            "\tpython3 scripts/harness/guide_lint.py\n\n"
+            "harness-test: ## unit-test the agent hooks (pre/post/stop)\n"
+            "\tpython3 scripts/harness/test_hook.py\n"
+        )
+        self.say(f"Makefile: + check-fast ({deps or 'no deps'}) guide-lint harness-test")
+        self.write("Makefile", (text.rstrip("\n") + "\n" if text else "") + block)
 
     # 6 ---------------------------------------------------------------------
     def ci(self):
@@ -264,6 +287,10 @@ class Migrator:
             idx = next((i for i, l in enumerate(lines) if re.match(r"^  complexity:", l)), None)
             if idx is None:
                 idx = next((i for i, l in enumerate(lines) if re.match(r"^  test:", l)), None)
+            if idx is None:  # platform repos: before the first job after `jobs:`
+                j = next((i for i, l in enumerate(lines) if l.startswith("jobs:")), None)
+                if j is not None:
+                    idx = next((i for i in range(j + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])), None)
             if idx is not None:
                 while idx > 0 and (lines[idx - 1].startswith("  #") or lines[idx - 1].strip() == ""):
                     idx -= 1
@@ -276,6 +303,15 @@ class Migrator:
                 self.say(f"ci.yml: + harness:red issue steps in `{jobname}`")
         if changed:
             self.write(rel, "\n".join(lines) + "\n")
+        for spec in self.sched:
+            wf, job = spec.split(":", 1)
+            wrel = f".github/workflows/{wf}"
+            if not os.path.isfile(self.p(wrel)):
+                continue
+            wl = self.read(wrel).splitlines()
+            if self._add_red_steps(wl, job):
+                self.say(f"{wf}: + harness:red issue steps in `{job}`")
+                self.write(wrel, "\n".join(wl) + "\n")
 
     @staticmethod
     def _job_bounds(lines, jobname):
@@ -394,8 +430,10 @@ class Migrator:
             self.write(".gitignore", text.rstrip("\n") + "\n" + "\n".join(add) + "\n")
 
     def run(self):
-        self.skills()
-        scoped = self.rules()
+        scoped = []
+        if self.profile == "service":
+            self.skills()
+            scoped = self.rules()
         self.managed()
         self.makefile()
         self.ci()
@@ -411,8 +449,12 @@ def main():
     ap.add_argument("--template", default=DEFAULT_TEMPLATE)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--keep-notes", action="store_true", help="keep TEMPLATE NOTE comments (template repo itself)")
+    ap.add_argument("--profile", choices=["service", "platform"], default="service",
+                    help="platform = non-Go repo (infra/e2e/console/ui-kit): no skills/rules rewrite, custom check-fast")
+    ap.add_argument("--fast-deps", default="", help="platform profile: make targets that make up check-fast")
+    ap.add_argument("--sched", action="append", default=[], help="workflow.yml:job that gets harness:red steps")
     a = ap.parse_args()
-    return Migrator(a.repo, a.template, a.dry_run, a.keep_notes).run()
+    return Migrator(a.repo, a.template, a.dry_run, a.keep_notes, a.profile, a.fast_deps, a.sched).run()
 
 
 if __name__ == "__main__":
