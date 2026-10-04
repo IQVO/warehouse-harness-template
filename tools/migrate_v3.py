@@ -43,6 +43,8 @@ MANAGED = [
     "scripts/harness/guide_lint.py",
     "scripts/harness/red_issue.py",
     "scripts/harness/fleet_drift.py",
+    "scripts/harness/repo_lint.py",       # config sensors: workflow paths, needs, dependabot, owner drift, placeholders
+    "scripts/harness/test_repo_lint.py",
     ".claude/settings.json",
     ".codex/hooks.json",
     ".opencode/plugins/harness.ts",
@@ -292,7 +294,9 @@ class Migrator:
                 "    steps:",
                 f"      - uses: {checkout}",
                 "      - run: python3 scripts/harness/guide_lint.py",
+                "      - run: python3 scripts/harness/repo_lint.py",
                 "      - run: python3 scripts/harness/test_hook.py",
+                "      - run: python3 scripts/harness/test_repo_lint.py",
                 "",
             ]
             idx = next((i for i, l in enumerate(lines) if re.match(r"^  complexity:", l)), None)
@@ -308,6 +312,9 @@ class Migrator:
                 lines[idx:idx] = [""] + job
                 changed = True
                 self.say("ci.yml: + guide-lint job (advisory)")
+        if self._add_repo_lint_steps(lines):
+            changed = True
+            self.say("ci.yml: + repo_lint steps in `guide-lint`")
         for jobname in ("mutation", "drift"):
             if self._add_red_steps(lines, jobname):
                 changed = True
@@ -323,6 +330,32 @@ class Migrator:
             if self._add_red_steps(wl, job):
                 self.say(f"{wf}: + harness:red issue steps in `{job}`")
                 self.write(wrel, "\n".join(wl) + "\n")
+
+    @staticmethod
+    def _add_repo_lint_steps(lines):
+        """Append repo_lint.py / test_repo_lint.py to an existing `guide-lint` job (idempotent)."""
+        text = "\n".join(lines)
+        if "repo_lint.py" in text:
+            return False
+        b = Migrator._job_bounds(lines, "guide-lint")
+        if not b:
+            return False
+        start, end = b
+        out = False
+        for i in range(start, end):
+            if "python3 scripts/harness/guide_lint.py" in lines[i]:
+                indent = re.match(r"\s*", lines[i]).group(0)
+                lines.insert(i + 1, f"{indent}- run: python3 scripts/harness/repo_lint.py")
+                out = True
+                break
+        if out:
+            b = Migrator._job_bounds(lines, "guide-lint")
+            for i in range(b[0], b[1]):
+                if "python3 scripts/harness/test_hook.py" in lines[i]:
+                    indent = re.match(r"\s*", lines[i]).group(0)
+                    lines.insert(i + 1, f"{indent}- run: python3 scripts/harness/test_repo_lint.py")
+                    break
+        return out
 
     @staticmethod
     def _job_bounds(lines, jobname):
