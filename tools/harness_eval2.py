@@ -79,6 +79,11 @@ def gates(task, wd):
         g["fleet type name"] = bool(re.search(
             r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"StockReceivedTotalUpdated"\s*\)'
             r'|com\.warehouse\.wms\.inventory-storage\.[a-z-]+\.StockReceivedTotalUpdated', d))
+        # PRE-REGISTERED (hypothesis from round 2, chosen after seeing the diffs, so round 3 tests it): the skill and
+        # rule files say the fleet type catalogue (ADR-0024) and the context map must be updated for a new event.
+        files = re.findall(r"^diff --git a/(\S+)", d, re.M)
+        g["type catalogue updated"] = any("0024-cloudevents" in f for f in files)
+        g["context map updated"] = any("ecosystem/context-map" in f for f in files)
         g["cloudevents used"] = "cloudevents" in d.lower() or "cloudevent" in d.lower() or any(
             "StockReceivedTotalUpdated" in l and "kafka.Message" not in l for l in added)
     return g, new_tests
