@@ -8,7 +8,7 @@ harness-health adds the checks that catch those, per repo, from origin/develop +
   guides   skills_ok / skills_flat   .claude/skills/<n>/SKILL.md with valid frontmatter vs flat files
   context  claude_lines, unscoped_rule_lines   always-loaded context size (lower is better)
   hooks    claude/codex/opencode adapters + scripts/harness/hook.py present
-  ci       guide-lint job, ai-review workflow, make check-fast
+  ci       guide-lint job, repo_lint config sensors (cfg), ai-review workflow, make check-fast
   runtime  last scheduled run per workflow (green/red), open harness:red issues
   version  harness-template: vN recorded in AGENTS.md
 
@@ -30,7 +30,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_REPOS = ["inventory-storage", "facility-layout", "order-management", "fulfillment-execution",
                  "wes-work-planning", "workforce-management", "labor-performance", "process-path-management",
-                 "warehouse-ops-agent", "network-fulfillment"]
+                 "warehouse-ops-agent", "network-fulfillment", "warehouse-planning"]
 
 
 def run(cmd: list[str], cwd: str | None = None) -> str:
@@ -94,7 +94,10 @@ def health(repo: Path, org: str, audit_mod) -> dict:
     }
     ci = audit_mod.repo_ci_jobs(repo)
     out["ci"] = {"guide-lint": "guide-lint" in ci, "ai-review": ".github/workflows/ai-review.yml" in fs,
-                 "check-fast": "check-fast:" in show(repo, "Makefile")}
+                 "check-fast": "check-fast:" in show(repo, "Makefile"),
+                 # config sensors (repo_lint.py) shipped AND wired into the CI guide-lint job
+                 "repo-lint": "scripts/harness/repo_lint.py" in fs
+                 and "repo_lint.py" in show(repo, ".github/workflows/ci.yml")}
 
     # runtime: latest scheduled run per workflow + open harness:red issues (needs gh auth)
     sched = {}
@@ -122,7 +125,7 @@ def print_report(rows: list[dict]) -> None:
     print("=" * 118)
     print("harness-health: does the harness work? (origin/develop + GitHub)")
     print("=" * 118)
-    print(f"{'repo':<25}{'skills ok':<11}{'CLAUDE':<8}{'unscoped':<10}{'hooks C/X/O':<13}{'lint':<6}{'review':<8}"
+    print(f"{'repo':<25}{'skills ok':<11}{'CLAUDE':<8}{'unscoped':<10}{'hooks C/X/O':<13}{'lint':<6}{'cfg':<5}{'review':<8}"
           f"{'fast':<6}{'sched':<8}{'red#':<6}version")
     for r in rows:
         h = r["hooks"]
@@ -130,7 +133,7 @@ def print_report(rows: list[dict]) -> None:
         sched = "RED" if any(v == "failure" for v in r["scheduled"].values()) else ("ok" if r["scheduled"] else "n/a")
         v = (r["version"] or "unversioned").replace("harness-template:", "").strip()[:14]
         print(f"{r['repo']:<25}{str(r['skills_ok']) + '/' + str(r['skills_total']):<11}{r['claude_lines']:<8}"
-              f"{r['unscoped_rule_lines']:<10}{hk:<13}{'Y' if r['ci']['guide-lint'] else '-':<6}"
+              f"{r['unscoped_rule_lines']:<10}{hk:<13}{'Y' if r['ci']['guide-lint'] else '-':<6}{'Y' if r['ci']['repo-lint'] else '-':<5}"
               f"{'Y' if r['ci']['ai-review'] else '-':<8}{'Y' if r['ci']['check-fast'] else '-':<6}"
               f"{sched:<8}{r['red_issues']:<6}{v}")
     print()

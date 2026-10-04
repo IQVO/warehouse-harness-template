@@ -23,6 +23,8 @@ jobs:
           go-version-file: go.mod
       - name: Hook tests (block/feedback rules, all three runtimes share this logic)
         run: python3 scripts/harness/test_hook.py
+      - name: Config sensors (repo_lint) tests
+        run: python3 scripts/harness/test_repo_lint.py
       - name: Python scripts compile
         run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
       - name: Managed Go fitness tests build and pass

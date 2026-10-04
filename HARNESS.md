@@ -178,6 +178,20 @@ existing repo to v3), `scripts/harness-audit.py`, `scripts/harness-health.py`, `
 Run `python3 tools/migrate_v3.py --repo <path>` to (re)apply the managed files to an existing service; it is
 idempotent and is also the engine of the weekly template sync.
 
+## Config sensors (`repo_lint`) and the incident protocol
+
+`scripts/harness/repo_lint.py` (stdlib only, runs in the `guide-lint` CI job) checks the configuration mistakes that
+reached CI in practice: **R1** workflow `working-directory`/`cache-dependency-path` that do not exist (checkout-path
+aware), **R2** `needs:` naming jobs that do not exist, **R3** Dependabot entries that cannot work (missing directory or
+manifest; an npm tree with a `file:` dependency outside the repo), **R4** a stale GitHub owner in registry/docs/chart
+URLs, **R5** unsubstituted `{{PLACEHOLDER}}`s. `# repo-lint: ignore` suppresses one line (say why). Tests:
+`scripts/harness/test_repo_lint.py`; two cases are the real incidents and must keep failing the lint.
+
+**Incident protocol.** Every failure that was not caught before CI ends with: the fix, a sensor or guide that would have
+caught it, that sensor rolled out to the whole fleet, and a row in [INCIDENTS.md](INCIDENTS.md). A row with no guard is
+an open gap and says so. A check whose message needed a human to explain it is not done: sensor output is a prompt, so
+it must state WHAT, WHY and FIX.
+
 ## Versioning
 
 This is `harness-template: v3` (v3 = agent runtime harness: loadable skills, hooks for Claude Code / Codex /
