@@ -89,7 +89,10 @@ MANIFEST: list[ManifestItem] = [
     ManifestItem("arch-test CI job", CATEGORY_ARCH_FITNESS, "ci_job", "arch-test"),
     ManifestItem("architecture_test.go", CATEGORY_ARCH_FITNESS, "file", "internal/architecture/architecture_test.go"),
     ManifestItem("fitness_test.go (fleet invariants)", CATEGORY_ARCH_FITNESS, "file", "internal/architecture/fitness_test.go"),
-    ManifestItem(".claude/commands/ (inferential review)", CATEGORY_ARCH_FITNESS, "file_glob", ".claude/commands/"),
+    ManifestItem("architecture-review skill (inferential review)", CATEGORY_ARCH_FITNESS, "file",
+                 ".claude/skills/architecture-review/SKILL.md"),
+    ManifestItem("agent hooks (scripts/harness/hook.py)", CATEGORY_ARCH_FITNESS, "file", "scripts/harness/hook.py"),
+    ManifestItem("guide-lint CI job", CATEGORY_MAINTAINABILITY, "ci_job", "guide-lint"),
     # --- behaviour ---
     ManifestItem("bdd CI job", CATEGORY_BEHAVIOUR, "ci_job", "bdd"),
     ManifestItem("integration CI job", CATEGORY_BEHAVIOUR, "ci_job", "integration"),

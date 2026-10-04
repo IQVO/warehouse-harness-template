@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""harness-health: does the harness WORK, not just exist? (harness-template v3, plan Phase 6.3)
+
+harness-audit.py answers "is the file/job there" (presence). Presence hid real failures:
+55 skill files that no runtime could load, scheduled sensors red for a week unnoticed.
+harness-health adds the checks that catch those, per repo, from origin/develop + GitHub:
+
+  guides   skills_ok / skills_flat   .claude/skills/<n>/SKILL.md with valid frontmatter vs flat files
+  context  claude_lines, unscoped_rule_lines   always-loaded context size (lower is better)
+  hooks    claude/codex/opencode adapters + scripts/harness/hook.py present
+  ci       guide-lint job, ai-review workflow, make check-fast
+  runtime  last scheduled run per workflow (green/red), open harness:red issues
+  version  harness-template: vN recorded in AGENTS.md
+
+Exit code 0 always (reporting tool). `--json` for machines. `--fail-on-red` exits 1 if any
+repo has a failing scheduled run or open harness:red issue (for cron alerting).
+
+Usage: python3 harness-health.py [--repos-root ~/warehouse-systems] [--repos a b] [--org IQVO]
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_REPOS = ["inventory-storage", "facility-layout", "order-management", "fulfillment-execution",
+                 "wes-work-planning", "workforce-management", "labor-performance", "process-path-management",
+                 "warehouse-ops-agent", "network-fulfillment"]
+
+
+def run(cmd: list[str], cwd: str | None = None) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd).stdout
+
+
+def show(repo: Path, path: str, ref: str = "origin/develop") -> str:
+    return run(["git", "-C", str(repo), "show", f"{ref}:{path}"])
+
+
+def frontmatter_ok(text: str, name: str) -> bool:
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    if end < 0:
+        return False
+    fm = text[3:end]
+    n = re.search(r"^name:\s*(\S+)", fm, re.M)
+    d = re.search(r"^description:\s*(.+)", fm, re.M)
+    return bool(n and n.group(1).strip("\"'") == name and d and len(d.group(1).strip()) > 10)
+
+
+def load_audit():
+    spec = importlib.util.spec_from_file_location("harness_audit", HERE / "harness-audit.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["harness_audit"] = mod  # dataclasses needs the module registered
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def health(repo: Path, org: str, audit_mod) -> dict:
+    files = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "origin/develop"]).splitlines()
+    fs = set(files)
+    out: dict = {"repo": repo.name}
+
+    flat = [f for f in files if re.match(r"^\.claude/skills/[^/]+\.md$", f)]
+    skill_dirs = sorted({f.split("/")[2] for f in files if re.match(r"^\.claude/skills/[^/]+/SKILL\.md$", f)})
+    ok = [d for d in skill_dirs if frontmatter_ok(show(repo, f".claude/skills/{d}/SKILL.md"), d)]
+    out["skills_ok"], out["skills_total"], out["skills_flat"] = len(ok), len(skill_dirs) + len(flat), len(flat)
+
+    # CLAUDE.md or AGENTS.md may be the symlink (its blob is just the target name): take the real one
+    out["claude_lines"] = max(len(show(repo, "CLAUDE.md").splitlines()), len(show(repo, "AGENTS.md").splitlines()))
+    unscoped = scoped = 0
+    for f in files:
+        if re.match(r"^\.claude/rules/.+\.md$", f):
+            t = show(repo, f)
+            has_paths = t.startswith("---") and re.search(r"^paths:", t.split("\n---", 1)[0], re.M)
+            n = len(t.splitlines())
+            if has_paths:
+                scoped += n
+            else:
+                unscoped += n
+    out["unscoped_rule_lines"], out["scoped_rule_lines"] = unscoped, scoped
+
+    out["hooks"] = {
+        "claude": ".claude/settings.json" in fs and "scripts/harness/hook.py" in fs,
+        "codex": ".codex/hooks.json" in fs,
+        "opencode": ".opencode/plugins/harness.ts" in fs,
+        "codex_skills_link": ".agents/skills" in fs,
+    }
+    ci = audit_mod.repo_ci_jobs(repo)
+    out["ci"] = {"guide-lint": "guide-lint" in ci, "ai-review": ".github/workflows/ai-review.yml" in fs,
+                 "check-fast": "check-fast:" in show(repo, "Makefile")}
+
+    # runtime: latest scheduled run per workflow + open harness:red issues (needs gh auth)
+    sched = {}
+    runs = run(["gh", "run", "list", "-R", f"{org}/{repo.name}", "--event", "schedule", "--limit", "20", "--json",
+                "workflowName,conclusion"])
+    try:
+        for r in json.loads(runs or "[]"):
+            sched.setdefault(r["workflowName"], r["conclusion"])
+    except json.JSONDecodeError:
+        pass
+    out["scheduled"] = sched
+    issues = run(["gh", "issue", "list", "-R", f"{org}/{repo.name}", "--label", "harness:red", "--state", "open",
+                  "--json", "number"])
+    try:
+        out["red_issues"] = len(json.loads(issues or "[]"))
+    except json.JSONDecodeError:
+        out["red_issues"] = -1
+    out["version"] = audit_mod.harness_template_version(repo)
+    out["presence"] = {c: f"{p}/{t}" for c, (p, t) in audit_mod.audit_repo(repo).category_scores.items()}
+    out["red"] = bool(out["red_issues"] > 0 or any(v == "failure" for v in sched.values()))
+    return out
+
+
+def print_report(rows: list[dict]) -> None:
+    print("=" * 118)
+    print("harness-health: does the harness work? (origin/develop + GitHub)")
+    print("=" * 118)
+    print(f"{'repo':<25}{'skills ok':<11}{'CLAUDE':<8}{'unscoped':<10}{'hooks C/X/O':<13}{'lint':<6}{'review':<8}"
+          f"{'fast':<6}{'sched':<8}{'red#':<6}version")
+    for r in rows:
+        h = r["hooks"]
+        hk = "".join("Y" if h[k] else "-" for k in ("claude", "codex", "opencode"))
+        sched = "RED" if any(v == "failure" for v in r["scheduled"].values()) else ("ok" if r["scheduled"] else "n/a")
+        v = (r["version"] or "unversioned").replace("harness-template:", "").strip()[:14]
+        print(f"{r['repo']:<25}{str(r['skills_ok']) + '/' + str(r['skills_total']):<11}{r['claude_lines']:<8}"
+              f"{r['unscoped_rule_lines']:<10}{hk:<13}{'Y' if r['ci']['guide-lint'] else '-':<6}"
+              f"{'Y' if r['ci']['ai-review'] else '-':<8}{'Y' if r['ci']['check-fast'] else '-':<6}"
+              f"{sched:<8}{r['red_issues']:<6}{v}")
+    print()
+    bad = [r for r in rows if r["skills_flat"] or r["red"]]
+    for r in bad:
+        if r["skills_flat"]:
+            print(f"  {r['repo']}: {r['skills_flat']} flat skill file(s) that NO runtime loads")
+        if r["red"]:
+            red = [k for k, v in r["scheduled"].items() if v == "failure"]
+            print(f"  {r['repo']}: scheduled RED: {', '.join(red) or '-'}; open harness:red issues: {r['red_issues']}")
+    if not bad:
+        print("  all repos: skills load, no red scheduled runs")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repos-root", default=str(Path.home() / "warehouse-systems"))
+    ap.add_argument("--repos", nargs="*", default=DEFAULT_REPOS)
+    ap.add_argument("--org", default="IQVO")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-on-red", action="store_true")
+    a = ap.parse_args()
+    audit_mod = load_audit()
+    rows = []
+    for name in a.repos:
+        p = Path(a.repos_root) / name
+        if not (p / ".git").exists():
+            print(f"warning: {p} is not a git repo, skipping", file=sys.stderr)
+            continue
+        rows.append(health(p, a.org, audit_mod))
+    if a.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        print_report(rows)
+    return 1 if a.fail_on_red and any(r["red"] for r in rows) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
