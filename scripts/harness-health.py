@@ -9,6 +9,7 @@ harness-health adds the checks that catch those, per repo, from origin/develop +
   context  claude_lines, unscoped_rule_lines   always-loaded context size (lower is better)
   hooks    claude/codex/opencode adapters + scripts/harness/hook.py present
   ci       guide-lint job, repo_lint config sensors (cfg), ai-review workflow, make check-fast
+  sync     managed files identical to this template (-N = N files drifted; the weekly sync opens the PR)
   runtime  last scheduled run per workflow (green/red), open harness:red issues
   version  harness-template: vN recorded in AGENTS.md
 
@@ -62,10 +63,39 @@ def load_audit():
     return mod
 
 
+CORE_MANAGED = ["scripts/harness/hook.py", "scripts/harness/guide_lint.py", "scripts/harness/repo_lint.py",
+                ".claude/settings.json"]
+
+
+def managed_list() -> list[str]:
+    """MANAGED file list from the template's own migrate_v3.py (single source of truth)."""
+    txt = (HERE.parent / "tools" / "migrate_v3.py").read_text()
+    block = txt[txt.index("MANAGED = ["):]
+    block = block[:block.index("]")]
+    return re.findall(r'"([^"]+)"', block)
+
+
+def managed_drift(repo: Path, files: set) -> list[str]:
+    """Managed files that differ from (or, for the core set, are missing vs) this template. Weekly sync closes them."""
+    drift = []
+    for rel in managed_list():
+        src = HERE.parent / rel
+        if not src.is_file():
+            continue
+        if rel not in files:
+            if rel in CORE_MANAGED:
+                drift.append(f"{rel} (missing)")
+            continue
+        if show(repo, rel) != src.read_text(errors="replace"):
+            drift.append(rel)
+    return drift
+
+
 def health(repo: Path, org: str, audit_mod) -> dict:
     files = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "origin/develop"]).splitlines()
     fs = set(files)
     out: dict = {"repo": repo.name}
+    out["drift"] = managed_drift(repo, fs)
 
     flat = [f for f in files if re.match(r"^\.claude/skills/[^/]+\.md$", f)]
     skill_dirs = sorted({f.split("/")[2] for f in files if re.match(r"^\.claude/skills/[^/]+/SKILL\.md$", f)})
@@ -99,15 +129,21 @@ def health(repo: Path, org: str, audit_mod) -> dict:
                  "repo-lint": "scripts/harness/repo_lint.py" in fs
                  and "repo_lint.py" in show(repo, ".github/workflows/ci.yml")}
 
-    # runtime: latest scheduled run per workflow + open harness:red issues (needs gh auth)
+    # runtime: latest scheduled-style run per workflow + open harness:red issues (needs gh auth).
+    # A manual workflow_dispatch on develop counts like a scheduled run: after a fix it is how we PROVE the weekly
+    # jobs are green without waiting for the next Monday (the newest of the two wins).
     sched = {}
-    runs = run(["gh", "run", "list", "-R", f"{org}/{repo.name}", "--event", "schedule", "--limit", "20", "--json",
-                "workflowName,conclusion"])
-    try:
-        for r in json.loads(runs or "[]"):
+    allruns = []
+    for ev in ("schedule", "workflow_dispatch"):
+        raw = run(["gh", "run", "list", "-R", f"{org}/{repo.name}", "--event", ev, "--branch", "develop",
+                   "--limit", "20", "--json", "workflowName,conclusion,createdAt"])
+        try:
+            allruns += json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            pass
+    for r in sorted(allruns, key=lambda x: x.get("createdAt", ""), reverse=True):
+        if r.get("conclusion"):  # skip runs still in progress
             sched.setdefault(r["workflowName"], r["conclusion"])
-    except json.JSONDecodeError:
-        pass
     out["scheduled"] = sched
     issues = run(["gh", "issue", "list", "-R", f"{org}/{repo.name}", "--label", "harness:red", "--state", "open",
                   "--json", "number"])
@@ -125,7 +161,7 @@ def print_report(rows: list[dict]) -> None:
     print("=" * 118)
     print("harness-health: does the harness work? (origin/develop + GitHub)")
     print("=" * 118)
-    print(f"{'repo':<25}{'skills ok':<11}{'CLAUDE':<8}{'unscoped':<10}{'hooks C/X/O':<13}{'lint':<6}{'cfg':<5}{'review':<8}"
+    print(f"{'repo':<25}{'skills ok':<11}{'CLAUDE':<8}{'unscoped':<10}{'hooks C/X/O':<13}{'lint':<6}{'cfg':<5}{'sync':<6}{'review':<8}"
           f"{'fast':<6}{'sched':<8}{'red#':<6}version")
     for r in rows:
         h = r["hooks"]
@@ -133,19 +169,21 @@ def print_report(rows: list[dict]) -> None:
         sched = "RED" if any(v == "failure" for v in r["scheduled"].values()) else ("ok" if r["scheduled"] else "n/a")
         v = (r["version"] or "unversioned").replace("harness-template:", "").strip()[:14]
         print(f"{r['repo']:<25}{str(r['skills_ok']) + '/' + str(r['skills_total']):<11}{r['claude_lines']:<8}"
-              f"{r['unscoped_rule_lines']:<10}{hk:<13}{'Y' if r['ci']['guide-lint'] else '-':<6}{'Y' if r['ci']['repo-lint'] else '-':<5}"
+              f"{r['unscoped_rule_lines']:<10}{hk:<13}{'Y' if r['ci']['guide-lint'] else '-':<6}{'Y' if r['ci']['repo-lint'] else '-':<5}{('Y' if not r['drift'] else '-' + str(len(r['drift']))):<6}"
               f"{'Y' if r['ci']['ai-review'] else '-':<8}{'Y' if r['ci']['check-fast'] else '-':<6}"
               f"{sched:<8}{r['red_issues']:<6}{v}")
     print()
-    bad = [r for r in rows if r["skills_flat"] or r["red"]]
+    bad = [r for r in rows if r["skills_flat"] or r["red"] or r["drift"]]
     for r in bad:
+        if r["drift"]:
+            print(f"  {r['repo']}: managed files drifted from the template: {', '.join(r['drift'])}")
         if r["skills_flat"]:
             print(f"  {r['repo']}: {r['skills_flat']} flat skill file(s) that NO runtime loads")
         if r["red"]:
             red = [k for k, v in r["scheduled"].items() if v == "failure"]
             print(f"  {r['repo']}: scheduled RED: {', '.join(red) or '-'}; open harness:red issues: {r['red_issues']}")
     if not bad:
-        print("  all repos: skills load, no red scheduled runs")
+        print("  all repos: skills load, managed files in sync, no red scheduled runs")
 
 
 def main() -> int:
