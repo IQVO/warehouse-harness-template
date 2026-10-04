@@ -43,6 +43,7 @@ DEFAULT_REPOS = [
     "process-path-management",
     "warehouse-ops-agent",
     "network-fulfillment",
+    "warehouse-planning",
 ]
 
 CATEGORY_MAINTAINABILITY = "maintainability"
