@@ -29,5 +29,29 @@ class Scorer(unittest.TestCase):
         self.assertEqual(ok, [])
 
 
+class EventScorer(unittest.TestCase):
+    ASY_BASE = "diff --git a/apis/asyncapi.yaml b/apis/asyncapi.yaml\n--- a/apis/asyncapi.yaml\n+++ b/apis/asyncapi.yaml\n"
+
+    def test_asyncapi_gate_is_diff_based_and_ignores_the_analytics_variant(self):
+        # incident: the unmodified file already contains AnalyticsPackageDiverted, and the first version of this gate
+        # tested the stock event's name for EVERY event task, so no correct solution could pass.
+        only_analytics = self.ASY_BASE + "+    AnalyticsPackageDiverted:\n"
+        self.assertFalse(he2.score_event_diff("package-diverted-event", only_analytics)["asyncapi updated"])
+        real = self.ASY_BASE + "+    PackageDiverted:\n+      payload: {}\n"
+        self.assertTrue(he2.score_event_diff("package-diverted-event", real)["asyncapi updated"])
+        self.assertFalse(he2.score_event_diff("stock-event", real)["asyncapi updated"])  # right name for the right task only
+
+    def test_every_event_task_has_a_gate_input(self):
+        for task in he2.EVENT_TASKS:
+            self.assertIn(task, he2.TASK_EVENT)
+            self.assertIn(task, he2.EVENT_TYPE_RX)
+            self.assertIn(task, he2.PROMPTS)
+
+    def test_catalogue_gate_matches_any_numbered_cloudevents_adr(self):
+        for n in ("0024", "0032"):
+            d = f"diff --git a/docs/docs/adr/{n}-cloudevents-mandatory-envelope.md b/x\n"
+            self.assertTrue(he2.score_event_diff("package-diverted-event", d)["type catalogue updated"])
+
+
 if __name__ == "__main__":
     unittest.main()

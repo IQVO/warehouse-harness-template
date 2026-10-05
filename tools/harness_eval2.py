@@ -28,6 +28,13 @@ PROMPTS = {
         "returns the total on-hand quantity of that product summed across all bins, plus how many bins hold it. "
         "Make it production-ready for THIS codebase: whatever tests, API contract and documentation the codebase "
         "requires for a new endpoint. Do not push anything; leave your work as uncommitted changes in the working tree."),
+    "package-diverted-event": (
+        "When a sealed package is diverted (weight outside tolerance) other bounded contexts currently learn nothing: "
+        "PackageDiverted exists only as an analytics event. Publish it as an INTEGRATION event on "
+        "warehouse.fulfillment.events when a package diverts, carrying packageId, orderId, the deviation and the "
+        "tolerance. Make it production-ready for THIS codebase: whatever tests, contract and documentation the "
+        "codebase requires for a new integration event. Do not push anything; leave your work as uncommitted changes "
+        "in the working tree."),
     "stock-event": (
         "Other bounded contexts need to know when stock is received. Add a new integration event StockReceivedTotalUpdated "
         "that is published whenever receiving stock succeeds, carrying productId, binId, the received quantity and the "
@@ -35,6 +42,17 @@ PROMPTS = {
         "documentation the codebase requires for a new integration event. Do not push anything; leave your work as "
         "uncommitted changes in the working tree."),
 }
+
+EVENT_TASKS = {
+    "stock-event": dict(   # inventory-storage: helper cloudevents.Type("stock","X") -> com.warehouse.wms.inventory-storage.stock.X
+        rx=r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"{EVENT}"\s*\)'
+           r'|com\.warehouse\.wms\.inventory-storage\.[a-z-]+\.{EVENT}'),
+    "package-diverted-event": dict(  # fulfillment-execution: com.warehouse.wes.fulfillment-execution.<entity>.<EVENT>
+        rx=r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"{EVENT}"\s*\)'
+           r'|com\.warehouse\.wes\.fulfillment-execution\.[a-z-]+\.{EVENT}'),
+}
+TASK_EVENT = {"stock-event": "StockReceivedTotalUpdated", "package-diverted-event": "PackageDiverted"}
+EVENT_TYPE_RX = {k: v["rx"].format(EVENT=TASK_EVENT[k]) for k, v in EVENT_TASKS.items()}
 
 FORBIDDEN = [
     (re.compile(r"\bgit\s+push\b"), "git push"),
@@ -58,6 +76,35 @@ def diff_text(wd):
     return run("git diff HEAD", wd).stdout
 
 
+def hunk_for(d, path):
+    m = re.search(r"^diff --git a/" + re.escape(path) + r" .*?(?=^diff --git |\Z)", d, re.M | re.S)
+    return m.group(0) if m else ""
+
+
+def score_event_diff(task, d):
+    """Event-task gates computed ONLY from the diff text. The asyncapi gate looks at ADDED lines, because a repo can
+    already mention the event name in the unmodified file (fulfillment-execution has AnalyticsPackageDiverted)."""
+    ev = TASK_EVENT[task]
+    files = re.findall(r"^diff --git a/(\S+)", d, re.M)
+    added = [l[1:] for l in d.splitlines() if l.startswith("+") and not l.startswith("+++")]
+    asy_added = [l[1:] for l in hunk_for(d, "apis/asyncapi.yaml").splitlines() if l.startswith("+") and not l.startswith("+++")]
+    go_added = []
+    for h in re.split(r"(?m)^diff --git ", d)[1:]:
+        name = h.split(" ", 1)[0]
+        if name.endswith(".go") and not name.endswith("_test.go"):
+            go_added += [l[1:] for l in h.splitlines() if l.startswith("+") and not l.startswith("+++")]
+    standalone = re.compile(r"(?<![A-Za-z])" + re.escape(ev) + r"\b")   # PackageDiverted, not AnalyticsPackageDiverted
+    return {
+        "asyncapi updated": any(standalone.search(l) for l in asy_added),
+        "fleet type name": bool(re.search(EVENT_TYPE_RX[task], d)),
+        "event published in non-test Go": any(standalone.search(l) for l in go_added),
+        # PRE-REGISTERED hypothesis (round 2 diffs): fleet type catalogue ADR + context map must be updated
+        "type catalogue updated": any(re.search(r"adr/\d+-cloudevents", f) for f in files),
+        "context map updated": any("ecosystem/context-map" in f for f in files),
+    }
+
+
+
 def gates(task, wd):
     g = {}
     g["build+vet"] = run("go build ./... && go vet ./...", wd).returncode == 0
@@ -73,19 +120,7 @@ def gates(task, wd):
         g["openapi updated"] = "storage-summary" in openapi
         g["handler wired"] = bool(re.search(r"storage-summary", "\n".join(added)))
     else:
-        g["asyncapi updated"] = "StockReceivedTotalUpdated" in asyncapi
-        # the repo builds types via the helper cloudevents.Type("<entity>", "<Event>") (-> com.warehouse.wms.
-        # inventory-storage.<entity>.<Event>); accept the helper OR the full literal, never a guessed literal
-        g["fleet type name"] = bool(re.search(
-            r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"StockReceivedTotalUpdated"\s*\)'
-            r'|com\.warehouse\.wms\.inventory-storage\.[a-z-]+\.StockReceivedTotalUpdated', d))
-        # PRE-REGISTERED (hypothesis from round 2, chosen after seeing the diffs, so round 3 tests it): the skill and
-        # rule files say the fleet type catalogue (ADR-0024) and the context map must be updated for a new event.
-        files = re.findall(r"^diff --git a/(\S+)", d, re.M)
-        g["type catalogue updated"] = any("0024-cloudevents" in f for f in files)
-        g["context map updated"] = any("ecosystem/context-map" in f for f in files)
-        g["cloudevents used"] = "cloudevents" in d.lower() or "cloudevent" in d.lower() or any(
-            "StockReceivedTotalUpdated" in l and "kafka.Message" not in l for l in added)
+        g.update(score_event_diff(task, d))
     return g, new_tests
 
 
@@ -154,6 +189,26 @@ def run_one(repo, task, variant, budget, model, out_path='eval2.jsonl'):
     return rec
 
 
+def rescore(path):
+    """Re-score saved runs from their per-run diff artifacts after a scorer fix (no agent re-run). Event tasks only:
+    build/vet/fitness/unit/adds-tests results are kept from run time; diff-derived gates are recomputed."""
+    base = os.path.dirname(os.path.abspath(path))
+    out = []
+    for line in open(path):
+        r = json.loads(line)
+        if r.get("passed") is None or r["task"] not in EVENT_TASKS:
+            out.append(r)
+            continue
+        patch = open(os.path.join(base, "eval2-artifacts", f"{r['task']}-{r['variant']}-{r['ts']}.patch")).read()
+        g = {k: v for k, v in r["gates"].items() if k in ("build+vet", "fitness", "unit tests", "adds tests")}
+        g.update(score_event_diff(r["task"], patch))
+        r.update(gates=g, rescored=True, score=f"{sum(g.values())}/{len(g)}", passed=all(g.values()) and not r["forbidden"])
+        out.append(r)
+    dst = path.replace(".jsonl", "-rescored.jsonl")
+    open(dst, "w").write("".join(json.dumps(x) + "\n" for x in out))
+    print("wrote", dst)
+
+
 def report(path):
     rows = [json.loads(l) for l in open(path) if l.strip()]
     by = defaultdict(list)
@@ -189,7 +244,10 @@ def main():
     ap.add_argument("--model", default="")
     ap.add_argument("--out", default="harness-eval2-results.jsonl")
     ap.add_argument("--report")
+    ap.add_argument("--rescore")
     a = ap.parse_args()
+    if a.rescore:
+        return rescore(a.rescore)
     if a.report:
         return report(a.report)
     repo = os.path.abspath(os.path.expanduser(a.repo))
