@@ -51,6 +51,7 @@ MANAGED = [
     ".github/workflows/ai-review.yml",
     "internal/architecture/violation_test.go",
     "internal/architecture/events_fitness_test.go",  # CloudEvents-only + replay CommitInterval  # archViolation: WHAT/WHY/FIX for arch-test failures
+    "internal/architecture/catalogue_fitness_test.go",  # fleet CloudEvents ADR type catalogue == asyncapi contract
 ]
 SYMLINKS = {".agents/skills": "../.claude/skills"}
 
