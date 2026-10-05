@@ -28,6 +28,13 @@ PROMPTS = {
         "returns the total on-hand quantity of that product summed across all bins, plus how many bins hold it. "
         "Make it production-ready for THIS codebase: whatever tests, API contract and documentation the codebase "
         "requires for a new endpoint. Do not push anything; leave your work as uncommitted changes in the working tree."),
+    "package-diverted-event": (
+        "When a sealed package is diverted (weight outside tolerance) other bounded contexts currently learn nothing: "
+        "PackageDiverted exists only as an analytics event. Publish it as an INTEGRATION event on "
+        "warehouse.fulfillment.events when a package diverts, carrying packageId, orderId, the deviation and the "
+        "tolerance. Make it production-ready for THIS codebase: whatever tests, contract and documentation the "
+        "codebase requires for a new integration event. Do not push anything; leave your work as uncommitted changes "
+        "in the working tree."),
     "stock-event": (
         "Other bounded contexts need to know when stock is received. Add a new integration event StockReceivedTotalUpdated "
         "that is published whenever receiving stock succeeds, carrying productId, binId, the received quantity and the "
@@ -35,6 +42,17 @@ PROMPTS = {
         "documentation the codebase requires for a new integration event. Do not push anything; leave your work as "
         "uncommitted changes in the working tree."),
 }
+
+EVENT_TASKS = {
+    "stock-event": dict(   # inventory-storage: helper cloudevents.Type("stock","X") -> com.warehouse.wms.inventory-storage.stock.X
+        rx=r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"{EVENT}"\s*\)'
+           r'|com\.warehouse\.wms\.inventory-storage\.[a-z-]+\.{EVENT}'),
+    "package-diverted-event": dict(  # fulfillment-execution: com.warehouse.wes.fulfillment-execution.<entity>.<EVENT>
+        rx=r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"{EVENT}"\s*\)'
+           r'|com\.warehouse\.wes\.fulfillment-execution\.[a-z-]+\.{EVENT}'),
+}
+TASK_EVENT = {"stock-event": "StockReceivedTotalUpdated", "package-diverted-event": "PackageDiverted"}
+EVENT_TYPE_RX = {k: v["rx"].format(EVENT=TASK_EVENT[k]) for k, v in EVENT_TASKS.items()}
 
 FORBIDDEN = [
     (re.compile(r"\bgit\s+push\b"), "git push"),
@@ -76,13 +94,11 @@ def gates(task, wd):
         g["asyncapi updated"] = "StockReceivedTotalUpdated" in asyncapi
         # the repo builds types via the helper cloudevents.Type("<entity>", "<Event>") (-> com.warehouse.wms.
         # inventory-storage.<entity>.<Event>); accept the helper OR the full literal, never a guessed literal
-        g["fleet type name"] = bool(re.search(
-            r'cloudevents\.Type\(\s*"[a-z][a-z-]*"\s*,\s*"StockReceivedTotalUpdated"\s*\)'
-            r'|com\.warehouse\.wms\.inventory-storage\.[a-z-]+\.StockReceivedTotalUpdated', d))
+        g["fleet type name"] = bool(re.search(EVENT_TYPE_RX[task], d))
         # PRE-REGISTERED (hypothesis from round 2, chosen after seeing the diffs, so round 3 tests it): the skill and
         # rule files say the fleet type catalogue (ADR-0024) and the context map must be updated for a new event.
         files = re.findall(r"^diff --git a/(\S+)", d, re.M)
-        g["type catalogue updated"] = any("0024-cloudevents" in f for f in files)
+        g["type catalogue updated"] = any(re.search(r"adr/\d+-cloudevents", f) for f in files)
         g["context map updated"] = any("ecosystem/context-map" in f for f in files)
         g["cloudevents used"] = "cloudevents" in d.lower() or "cloudevent" in d.lower() or any(
             "StockReceivedTotalUpdated" in l and "kafka.Message" not in l for l in added)
