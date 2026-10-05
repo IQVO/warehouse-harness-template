@@ -193,6 +193,10 @@ def main() -> int:
     ap.add_argument("--org", default="IQVO")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--fail-on-red", action="store_true")
+    ap.add_argument("--no-fetch", action="store_true",
+                    help="read the repos' local origin/develop as-is (offline). WITHOUT this the script fetches first: "
+                         "reading stale refs once reported 'managed files drifted' for repos whose sync PRs had merged, "
+                         "which would make the weekly sync open pointless PRs")
     a = ap.parse_args()
     audit_mod = load_audit()
     rows = []
@@ -201,6 +205,12 @@ def main() -> int:
         if not (p / ".git").exists():
             print(f"warning: {p} is not a git repo, skipping", file=sys.stderr)
             continue
+        if not a.no_fetch:
+            f = subprocess.run(["git", "-C", str(p), "fetch", "-q", "origin", "develop"], capture_output=True, text=True,
+                               check=False, timeout=60)
+            if f.returncode != 0:
+                print(f"warning: could not fetch {name} ({f.stderr.strip()[:80]}); its row may use a stale origin/develop",
+                      file=sys.stderr)
         rows.append(health(p, a.org, audit_mod))
     if a.json:
         print(json.dumps(rows, indent=2))
