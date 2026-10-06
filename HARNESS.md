@@ -78,11 +78,19 @@ already-lived incident, not a hypothetical:
   Kafka's rebalance protocol. Fixed in wes-work-planning#67; this test
   keeps it fixed.
 - **TestKafkaIntegrationTestsUseTestcontainers** — this fleet's CI
-  `integration` job provisions Postgres only. A Kafka-touching
+  `integration` job provisions no service containers. A Kafka-touching
   `-tags=integration` test that gates on `os.Getenv("KAFKA_BROKERS")` +
   `t.Skip`, or hardcodes `localhost:9092`, silently skips or fails on
   every CI runner and proves nothing. testcontainers is the only variant
   that actually exercises the assertions.
+- **TestPostgresIntegrationTestsUseTestcontainers** (+
+  `TestPostgresIntegrationSensorFailsOnBadFixtures`, which proves the sensor
+  can fail) — order-management's `OrderRepo` integration test gated on
+  `DATABASE_URL` + `t.Skip` and was silently skipped in CI; the same shape
+  existed in 10 more repos. A `_integration_test.go` that reads
+  `DATABASE_URL`/`ANALYTICS_DATABASE_URL`, skips on it, or uses
+  pgx/`database/sql` without a `testcontainers-go/modules/postgres` import
+  reachable in its package fails CI. See INCIDENTS.md.
 - **TestNoEventEnvelopeToggleOrFlatEnvelope** — every repo used to carry
   a hand-rolled flat envelope (`event_id`/`event_type`/`occurred_at`) and
   several grew a dual-mode `EVENT_ENVELOPE_MODE` toggle while "migrating"
