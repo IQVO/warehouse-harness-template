@@ -93,11 +93,17 @@ the threshold.
 ## Kafka/Postgres integration tests: testcontainers, never a skip-gate
 
 A `-tags=integration` test touching Kafka or Postgres MUST start its own
-container via `testcontainers-go`. Never gate on `os.Getenv("KAFKA_BROKERS")`
-+ `t.Skip(...)`, and never hardcode `localhost:9092`. This fleet's CI
-`integration` job provisions Postgres ONLY (no Kafka) — a skip-gated
-Kafka test silently skips in CI and proves nothing there, while
-testcontainers actually exercises the assertions on the runner. See
+container via `testcontainers-go` (`modules/postgres` / `modules/kafka`).
+Never gate on `os.Getenv("KAFKA_BROKERS")` or `os.Getenv("DATABASE_URL")`
+(or `ANALYTICS_DATABASE_URL`) + `t.Skip(...)`, and never hardcode
+`localhost:9092`. This fleet's CI `integration` job provisions NO service
+containers (no Postgres, no Kafka; `make integration` needs only Docker) — a
+skip-gated test silently skips in CI and proves nothing there, while
+testcontainers actually exercises the assertions on the runner. A fitness
+test per technology enforces it (`TestKafkaIntegrationTestsUseTestcontainers`,
+`TestPostgresIntegrationTestsUseTestcontainers`). Share one container per
+package through a helper (e.g. an `outboxDB(t)` that runs
+`tcpostgres.Run` -> `ConnectionString` -> migrate -> pool -> `t.Cleanup`). See
 `internal/adapters/outbound/facilitycache/consumer_integration_test.go`
 for the working recipe (unique topic per test, one shared container per
 package, explicit `CreateTopics` + poll for the partition leader before

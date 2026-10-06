@@ -46,7 +46,7 @@ help:
 	@echo "  test           go test ./... -race — unit + httptest + bdd, no DB needed"
 	@echo "  coverage       CI coverage command + the $(COVERAGE_THRESHOLD)% gate"
 	@echo "  integration    go test -tags=integration ./... -race -count=1"
-	@echo "                 (needs a running Postgres; not in check)"
+	@echo "                 (testcontainers boots its own Postgres/Kafka; needs only Docker; not in check)"
 	@echo "  bdd            go test ./... -run TestFeatures -v — godog/Gherkin acceptance"
 	@echo "  arch-test      go test ./internal/architecture/... -v — hexagonal fitness"
 	@echo "  mutation       gremlins on $(MUTATION_FAST_PKG) — the fast blocking subset"
@@ -96,14 +96,10 @@ coverage:
 		exit 1; \
 	fi
 
-# Needs a running Postgres and DATABASE_URL, e.g.
-#   docker compose up -d postgres
-#   DATABASE_URL='postgres://{{SERVICE}}@localhost:5432/{{SERVICE}}?sslmode=disable' PGPASSWORD='{{SERVICE}}' make integration
+# Needs only Docker: every integration test boots its own Postgres/Kafka via
+# testcontainers (no DATABASE_URL, no docker compose, no t.Skip gate --
+# TestPostgresIntegrationTestsUseTestcontainers enforces it).
 # Deliberately NOT part of `check` / `check-all`.
-# NOTE: never embed a real password in a postgres://user:pass@host URL in
-# committed files -- some environments' own tooling treats that shape as a
-# credential leak and will silently strip it. Use a separate PGPASSWORD (or
-# your driver's password-injection API) instead. See HARNESS.md.
 integration:
 	$(GO) test -tags=integration ./... -race -count=1
 
