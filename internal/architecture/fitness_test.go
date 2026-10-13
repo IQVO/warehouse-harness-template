@@ -4,9 +4,12 @@
 // incident somewhere in the warehouse-systems fleet. See HARNESS.md's
 // "fitness functions" section for the full incident list.
 //
-// TEMPLATE NOTE (warehouse-harness-template v1): TestNoAuthMiddlewareReintroduced,
-// TestKafkaConsumerGroupNeverHardcodedInline and
-// TestKafkaIntegrationTestsUseTestcontainers are universal -- keep them
+// TEMPLATE NOTE (warehouse-harness-template v2): TestNoAuthMiddlewareReintroduced,
+// TestKafkaConsumerGroupNeverHardcodedInline,
+// TestKafkaIntegrationTestsUseTestcontainers,
+// TestPostgresIntegrationTestsUseTestcontainers (+ its fixture test
+// TestPostgresIntegrationSensorFailsOnBadFixtures) and
+// TestNoEventEnvelopeToggleOrFlatEnvelope are universal -- keep them
 // verbatim (they don't reference modulePath or any repo-specific literal).
 // TestMCPAdapterDependencyRule is CONDITIONAL: only port it if this repo
 // has an internal/adapters/inbound/mcp package. If this repo is one of the
@@ -18,6 +21,7 @@ package architecture
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -236,7 +240,7 @@ func TestKafkaConsumerGroupNeverHardcodedInline(t *testing.T) {
 // (corrected 2026-09-06): a Kafka-touching `-tags=integration` test MUST
 // start its own broker via testcontainers-go/modules/kafka, never gate on
 // os.Getenv("KAFKA_BROKERS") + t.Skip, and never hardcode localhost:9092.
-// This fleet's CI `integration` job provisions Postgres only — a
+// This fleet's CI `integration` job provisions no service containers — a
 // skip-gated Kafka test silently skips in CI and proves nothing there,
 // while testcontainers is the only variant that actually exercises the
 // Kafka assertions on a runner. Scans every _integration_test.go file that
@@ -316,7 +320,7 @@ func assertKafkaIntegrationTestFollowsFleetRules(t *testing.T, path, content str
 	t.Helper()
 
 	if hasSkipGate {
-		t.Errorf("%s: gates on os.Getenv(\"KAFKA_BROKERS\") — this fleet's CI integration job provisions Postgres only, so a skip-gated Kafka test silently skips in CI and proves nothing there; start a real broker via testcontainers-go/modules/kafka instead", path)
+		t.Errorf("%s: gates on os.Getenv(\"KAFKA_BROKERS\") — this fleet's CI integration job provisions no Kafka broker, so a skip-gated Kafka test silently skips in CI and proves nothing there; start a real broker via testcontainers-go/modules/kafka instead", path)
 	}
 	if hasHardcodedBroker {
 		t.Errorf("%s: hardcodes localhost:9092 — a fresh CI runner has no broker at that address; start one via testcontainers-go/modules/kafka instead", path)
@@ -324,4 +328,251 @@ func assertKafkaIntegrationTestFollowsFleetRules(t *testing.T, path, content str
 	if !strings.Contains(content, "testcontainers-go/modules/kafka") {
 		t.Errorf("%s: touches Kafka but does not import github.com/testcontainers/testcontainers-go/modules/kafka — Kafka-touching integration tests in this fleet must start their own broker via testcontainers, never assume/skip on an external one", path)
 	}
+}
+
+// envelopeToggleRE matches the identifiers of the retired envelope
+// toggle (fleet-wide CloudEvents cutover, 2026-09-30): the env var and the
+// Go names every repo used for its flat/dual/cloudevents switch.
+var envelopeToggleRE = regexp.MustCompile(`EVENT_ENVELOPE_MODE|\bEnvelopeMode\b|\bParseEnvelopeMode\b`)
+
+// flatEnvelopeTagRE matches the struct tags of the retired flat envelope
+// (`event_id` / `event_type` / `occurred_at` at the TOP level of the Kafka
+// message). A file carrying both the id and the type tag is a hand-rolled
+// flat envelope struct; a payload that merely has an `occurred_at` field
+// inside CloudEvents `data` does not match on its own.
+var (
+	flatEnvelopeIDTagRE   = regexp.MustCompile("json:\"event_id[\",]")
+	flatEnvelopeTypeTagRE = regexp.MustCompile("json:\"event_type[\",]")
+)
+
+// TestNoEventEnvelopeToggleOrFlatEnvelope encodes the fleet-wide rule that
+// CloudEvents 1.0 (structured mode, built only through
+// internal/adapters/kafka/cloudevents) is the ONLY Kafka event envelope:
+// no flat envelope, no dual-write/dual-read, no EVENT_ENVELOPE_MODE (or any
+// other) envelope toggle. Every repo carried a flat envelope struct and
+// several carried a dual-mode toggle before the cutover; an agent
+// "helpfully" re-adding either for "backward compatibility" must fail CI.
+// Scans non-comment, non-test Go source under internal/ and cmd/.
+func TestNoEventEnvelopeToggleOrFlatEnvelope(t *testing.T) {
+	files := append(goFilesUnder(t, "..", false), goFilesUnder(t, "../../cmd", false)...)
+	for _, path := range files {
+		hasIDTag, hasTypeTag := scanEnvelopeRules(t, path)
+		if hasIDTag && hasTypeTag {
+			t.Errorf("%s: declares a flat event envelope (json \"event_id\" + \"event_type\" tags) — CloudEvents 1.0 is the only envelope in this fleet; build/decode with internal/adapters/kafka/cloudevents (sdk-go v2 event package) instead", path)
+		}
+	}
+}
+
+// scanEnvelopeRules reports toggle identifiers as test errors line by line
+// and returns whether the file declares the flat envelope's id/type tags.
+func scanEnvelopeRules(t *testing.T, path string) (hasIDTag, hasTypeTag bool) {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	lineNo := 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		if envelopeToggleRE.MatchString(line) {
+			t.Errorf("%s:%d: references an event-envelope toggle: %q — there is no flat/dual mode; CloudEvents 1.0 is mandatory and unconditional", path, lineNo, strings.TrimSpace(line))
+		}
+		hasIDTag = hasIDTag || flatEnvelopeIDTagRE.MatchString(line)
+		hasTypeTag = hasTypeTag || flatEnvelopeTypeTagRE.MatchString(line)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", path, err)
+	}
+	return hasIDTag, hasTypeTag
+}
+
+const tcPostgresImport = "testcontainers-go/modules/postgres"
+
+// dbEnvGateRE matches the env lookups that gate a Postgres integration test
+// on an externally provisioned database.
+var dbEnvGateRE = regexp.MustCompile(`os\.(Getenv|LookupEnv)\("(ANALYTICS_)?DATABASE_URL"\)`)
+
+// touchesPostgres reports whether the test source talks to Postgres through
+// pgx/pgxpool or database/sql (import-path check; these are real drivers,
+// unlike the kafka-go type-only import the Kafka sensor has to special-case).
+func touchesPostgres(content string) bool {
+	return strings.Contains(content, `"github.com/jackc/pgx`) ||
+		strings.Contains(content, `"database/sql"`)
+}
+
+// importsTCPostgres reports whether the file (or, via a shared helper, a
+// sibling .go file in the same package directory) imports the
+// testcontainers postgres module. A package's tests commonly share one
+// helper (e.g. outboxDB in the postgres package), so the helper file
+// satisfies the obligation for the whole directory.
+func importsTCPostgres(t *testing.T, path string) bool {
+	t.Helper()
+	siblings, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.go"))
+	if err != nil {
+		t.Fatalf("glob siblings of %s: %v", path, err)
+	}
+	for _, s := range siblings {
+		src, err := os.ReadFile(s)
+		if err != nil {
+			t.Fatalf("read %s: %v", s, err)
+		}
+		if strings.Contains(string(src), `"github.com/testcontainers/`+tcPostgresImport+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// postgresIntegrationViolations returns every way one _integration_test.go
+// file breaks the testcontainers-Postgres rule: gating on DATABASE_URL /
+// ANALYTICS_DATABASE_URL (env lookup or a DB-env-tied t.Skip) in non-comment
+// source, or using a Postgres driver with no testcontainers postgres import
+// reachable in its package. Pure over (path) so the violation test can feed
+// it a bad fixture.
+func postgresIntegrationViolations(t *testing.T, path string) []string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []string
+	lineNo := 0
+	scanner := bufio.NewScanner(strings.NewReader(string(src)))
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		switch {
+		case dbEnvGateRE.MatchString(line):
+			out = append(out, fmt.Sprintf("%s:%d: reads a DATABASE_URL env var (%q) — an env-gated Postgres test silently skips wherever the var is unset; start a real database via testcontainers-go/modules/postgres instead", path, lineNo, strings.TrimSpace(line)))
+		case strings.Contains(line, "t.Skip") && strings.Contains(strings.ToUpper(line), "DATABASE_URL"):
+			out = append(out, fmt.Sprintf("%s:%d: t.Skip tied to a missing DATABASE_URL (%q) — Postgres integration tests must boot their own database via testcontainers, never skip", path, lineNo, strings.TrimSpace(line)))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", path, err)
+	}
+	if touchesPostgres(string(src)) && !importsTCPostgres(t, path) {
+		out = append(out, fmt.Sprintf("%s: uses pgx/database/sql but neither this file nor a sibling .go file in its package imports github.com/testcontainers/testcontainers-go/modules/postgres — Postgres integration tests must start their own database via testcontainers (reuse the package's shared helper)", path))
+	}
+	return out
+}
+
+// TestPostgresIntegrationTestsUseTestcontainers mirrors the Kafka rule for
+// Postgres: a `-tags=integration` test MUST boot its own database via
+// testcontainers-go/modules/postgres, never gate on DATABASE_URL /
+// ANALYTICS_DATABASE_URL + t.Skip (a skip-gated test silently proves nothing
+// wherever the variable is unset), and a file that touches pgx/database/sql
+// must have the testcontainers postgres import reachable in its package.
+// Incident: order-management's OrderRepo integration test was env-gated and
+// silently skipped in CI; fixed fleet-wide (see INCIDENTS.md).
+func TestPostgresIntegrationTestsUseTestcontainers(t *testing.T) {
+	// internal/ and cmd/ — the only trees that hold Go sources; walking the
+	// repo root would crawl docs/ and web/ node_modules for nothing.
+	var paths []string
+	for _, root := range []string{"..", "../../cmd"} {
+		paths = append(paths, goFilesUnder(t, root, true)...)
+	}
+	for _, path := range paths {
+		if !strings.HasSuffix(path, "_integration_test.go") {
+			continue
+		}
+		for _, v := range postgresIntegrationViolations(t, path) {
+			t.Error(v)
+		}
+	}
+}
+
+// TestPostgresIntegrationSensorFailsOnBadFixtures proves the sensor above
+// can actually fail: each fixture breaks the rule one way and must be
+// reported, while a compliant fixture and a comment-only mention must not.
+func TestPostgresIntegrationSensorFailsOnBadFixtures(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   map[string]string
+		wantErr string // substring of a violation; "" means no violation expected
+	}{
+		{
+			name:    "env gate",
+			files:   map[string]string{"bad_integration_test.go": "package x\n\nfunc f() {\n	dsn := os.Getenv(\"DATABASE_URL\")\n	_ = dsn\n}\n"},
+			wantErr: "reads a DATABASE_URL env var",
+		},
+		{
+			name:    "analytics env gate",
+			files:   map[string]string{"bad_integration_test.go": "package x\n\nfunc f() {\n	_ = os.Getenv(\"ANALYTICS_DATABASE_URL\")\n}\n"},
+			wantErr: "reads a DATABASE_URL env var",
+		},
+		{
+			name:    "skip tied to missing db env",
+			files:   map[string]string{"bad_integration_test.go": "package x\n\nfunc f(t *testing.T) {\n	t.Skip(\"DATABASE_URL not set\")\n}\n"},
+			wantErr: "t.Skip tied to a missing DATABASE_URL",
+		},
+		{
+			name:    "pgx without testcontainers",
+			files:   map[string]string{"bad_integration_test.go": "package x\n\nimport \"github.com/jackc/pgx/v5/pgxpool\"\n\nvar _ *pgxpool.Pool\n"},
+			wantErr: "uses pgx/database/sql but neither this file nor a sibling",
+		},
+		{
+			name: "pgx with helper in sibling file",
+			files: map[string]string{
+				"ok_integration_test.go":     "package x\n\nimport \"github.com/jackc/pgx/v5/pgxpool\"\n\nvar _ *pgxpool.Pool\n",
+				"helper_integration_test.go": "package x\n\nimport tcpostgres \"github.com/testcontainers/testcontainers-go/modules/postgres\"\n\nvar _ = tcpostgres.Run\n",
+			},
+		},
+		{
+			name:  "comment mention is not a violation",
+			files: map[string]string{"ok_integration_test.go": "package x\n\n// never reads os.Getenv(\"DATABASE_URL\") and never t.Skip(\"DATABASE_URL\")\nfunc f() {}\n"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fixtureViolations(t, tc.files)
+			if tc.wantErr == "" {
+				if len(got) != 0 {
+					t.Fatalf("compliant fixture reported violations: %v", got)
+				}
+				return
+			}
+			if !anyContains(got, tc.wantErr) {
+				t.Fatalf("sensor did not flag the bad fixture (want substring %q), got %v", tc.wantErr, got)
+			}
+		})
+	}
+}
+
+// fixtureViolations writes the fixture files into a temp dir and runs the
+// sensor on the one that is not a "helper_" file (helpers exist only to
+// satisfy the sibling-import check).
+func fixtureViolations(t *testing.T, files map[string]string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	var target string
+	for name, body := range files {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		if !strings.HasPrefix(name, "helper_") {
+			target = p
+		}
+	}
+	return postgresIntegrationViolations(t, target)
+}
+
+func anyContains(items []string, sub string) bool {
+	for _, s := range items {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }

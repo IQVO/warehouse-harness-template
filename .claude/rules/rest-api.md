@@ -1,4 +1,11 @@
-<!-- TEMPLATE (warehouse-harness-template v1): fill in for THIS repo. -->
+---
+paths:
+  - "internal/adapters/inbound/http/**"
+  - "apis/openapi*.yaml"
+  - "apis/openapi/**"
+---
+
+<!-- TEMPLATE (warehouse-harness-template v2): fill in for THIS repo. -->
 # REST API (inbound adapter)
 
 List every route -> use case mapping, kept in sync with `apis/openapi.yaml`

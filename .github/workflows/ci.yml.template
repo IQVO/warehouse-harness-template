@@ -37,6 +37,18 @@ jobs:
           version: v2.13.1
           args: --timeout=5m
 
+  # Agent-guide sensor (harness-template v3): skills load, references resolve, context budget.
+  # ADVISORY (continue-on-error) until the guides are clean; then flip to blocking.
+  guide-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 scripts/harness/guide_lint.py
+      - run: python3 scripts/harness/test_hook.py
+
+
   # Complexity gate as its own named check: cyclomatic (gocyclo, cyclop),
   # cognitive (gocognit), nesting (nestif) and function size (funlen).
   # Thresholds live in .golangci.yml; --enable-only runs just these five
@@ -129,27 +141,14 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: "{{SERVICE}}"
-          POSTGRES_PASSWORD: "{{SERVICE}}"
-          POSTGRES_DB: "{{SERVICE}}"
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    # No Postgres service container: every integration test boots its own
+    # Postgres (and Kafka) via testcontainers on the runner's Docker daemon.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Integration tests
-        env:
-          DATABASE_URL: "postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable"
+      - name: Integration tests (testcontainers; each test boots its own Postgres/Kafka)
         run: go test -tags=integration ./... -race -count=1
 
   # Fast, BLOCKING mutation subset: runs on every push/PR so a drop in test
@@ -177,6 +176,9 @@ jobs:
 
   mutation:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 90
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
@@ -188,12 +190,25 @@ jobs:
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
       - name: Mutation testing (domain layer)
         run: gremlins unleash ./internal/domain --workers 1 --timeout-coefficient 30
+      - name: Open or refresh the harness:red issue on a scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/red_issue.py mutation "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Close the harness:red issue when the scheduled run recovers
+        if: success() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/red_issue.py mutation --close
 
   # ============================================================
   # CLASSIFICATION: CONTINUOUS DRIFT (advisory, weekly — never blocks a PR)
   # ============================================================
   drift:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
@@ -226,6 +241,16 @@ jobs:
           gremlins unleash ./internal/domain --workers 1 --timeout-coefficient 30 > /tmp/gremlins.log 2>&1 || true
           echo "### coverage-quality" >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/coverage-quality.py /tmp/cov.out /tmp/gremlins.log | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Open or refresh the harness:red issue on a scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/red_issue.py drift "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Close the harness:red issue when the scheduled run recovers
+        if: success() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/red_issue.py drift --close
 
   # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (API contracts)
@@ -318,6 +343,57 @@ jobs:
       - uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
       - name: Run chart-testing (lint)
         run: ct lint --charts charts/{{SERVICE_REPO}} --validate-maintainers=false --check-version-increment=false
+
+  # ============================================================
+  # CLASSIFICATION: PACKAGING (Helm chart tests)
+  # Runs on EVERY push and PR (unlike helm-lint): the chart tests guard
+  # behaviour, not packaging -- the env ConfigMap mounted via envFrom (gap
+  # fix D14), every Service selecting exactly one Deployment, Kong config.
+  # Every charts/{{SERVICE_REPO}}/tests/*.sh and test_*.py runs here (repo_lint
+  # R9 fails a chart test no workflow runs). PyYAML is installed hash-pinned
+  # (Scorecard Pinned-Dependencies), and a test that prints SKIP fails the
+  # job: a selector test must never pass vacuously.
+  # ============================================================
+  chart-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install PyYAML (hash-pinned)
+        run: python3 -m pip install --require-hashes -r .github/requirements/chart-tests.txt
+      - name: Chart tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(charts/{{SERVICE_REPO}}/tests/*.sh charts/{{SERVICE_REPO}}/tests/test_*.py)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::warning::no chart tests in charts/{{SERVICE_REPO}}/tests: add a render test asserting the envFrom mount and a Service selector test"
+            exit 0
+          fi
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            status=0
+            case "$t" in
+              *.sh) out=$(bash "$t" 2>&1) || status=$? ;;
+              *) out=$(python3 "$t" 2>&1) || status=$? ;;
+            esac
+            echo "$out"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$t failed"
+              exit "$status"
+            fi
+            if grep -q '^SKIP' <<<"$out"; then
+              echo "::error::$t printed SKIP: a chart test must not pass vacuously (is PyYAML or helm missing?)"
+              exit 1
+            fi
+          done
 
   # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (architecture fitness)

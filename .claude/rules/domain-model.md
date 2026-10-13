@@ -1,4 +1,4 @@
-<!-- TEMPLATE (warehouse-harness-template v1): fill in for THIS repo. -->
+<!-- TEMPLATE (warehouse-harness-template v2): fill in for THIS repo. -->
 # Domain model: ubiquitous language, aggregates, events, use cases
 
 ## Ubiquitous Language (use these exact names)

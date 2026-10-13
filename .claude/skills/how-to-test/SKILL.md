@@ -1,4 +1,9 @@
-<!-- TEMPLATE NOTE (warehouse-harness-template v1): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
+---
+name: how-to-test
+description: Write or review tests and diagnose a failing coverage, mutation, bdd or integration CI job: the four test layers, the 90% gate, gremlins threshold semantics, the testcontainers rule. Use when adding tests, killing a surviving mutant, or fixing a red check.
+---
+
+<!-- TEMPLATE NOTE (warehouse-harness-template v2): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
 
 # How to test
 
@@ -88,11 +93,17 @@ the threshold.
 ## Kafka/Postgres integration tests: testcontainers, never a skip-gate
 
 A `-tags=integration` test touching Kafka or Postgres MUST start its own
-container via `testcontainers-go`. Never gate on `os.Getenv("KAFKA_BROKERS")`
-+ `t.Skip(...)`, and never hardcode `localhost:9092`. This fleet's CI
-`integration` job provisions Postgres ONLY (no Kafka) — a skip-gated
-Kafka test silently skips in CI and proves nothing there, while
-testcontainers actually exercises the assertions on the runner. See
+container via `testcontainers-go` (`modules/postgres` / `modules/kafka`).
+Never gate on `os.Getenv("KAFKA_BROKERS")` or `os.Getenv("DATABASE_URL")`
+(or `ANALYTICS_DATABASE_URL`) + `t.Skip(...)`, and never hardcode
+`localhost:9092`. This fleet's CI `integration` job provisions NO service
+containers (no Postgres, no Kafka; `make integration` needs only Docker) — a
+skip-gated test silently skips in CI and proves nothing there, while
+testcontainers actually exercises the assertions on the runner. A fitness
+test per technology enforces it (`TestKafkaIntegrationTestsUseTestcontainers`,
+`TestPostgresIntegrationTestsUseTestcontainers`). Share one container per
+package through a helper (e.g. an `outboxDB(t)` that runs
+`tcpostgres.Run` -> `ConnectionString` -> migrate -> pool -> `t.Cleanup`). See
 `internal/adapters/outbound/facilitycache/consumer_integration_test.go`
 for the working recipe (unique topic per test, one shared container per
 package, explicit `CreateTopics` + poll for the partition leader before

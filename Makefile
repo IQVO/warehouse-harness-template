@@ -1,4 +1,4 @@
-# Makefile — the local quality gate template (warehouse-harness-template v1).
+# Makefile — the local quality gate template (warehouse-harness-template v2).
 #
 # Every target below mirrors a sensor in .github/workflows/ci.yml, so the
 # same feedback CI gives you post-push is available locally, pre-commit.
@@ -46,7 +46,7 @@ help:
 	@echo "  test           go test ./... -race — unit + httptest + bdd, no DB needed"
 	@echo "  coverage       CI coverage command + the $(COVERAGE_THRESHOLD)% gate"
 	@echo "  integration    go test -tags=integration ./... -race -count=1"
-	@echo "                 (needs a running Postgres; not in check)"
+	@echo "                 (testcontainers boots its own Postgres/Kafka; needs only Docker; not in check)"
 	@echo "  bdd            go test ./... -run TestFeatures -v — godog/Gherkin acceptance"
 	@echo "  arch-test      go test ./internal/architecture/... -v — hexagonal fitness"
 	@echo "  mutation       gremlins on $(MUTATION_FAST_PKG) — the fast blocking subset"
@@ -96,14 +96,10 @@ coverage:
 		exit 1; \
 	fi
 
-# Needs a running Postgres and DATABASE_URL, e.g.
-#   docker compose up -d postgres
-#   DATABASE_URL='postgres://{{SERVICE}}@localhost:5432/{{SERVICE}}?sslmode=disable' PGPASSWORD='{{SERVICE}}' make integration
+# Needs only Docker: every integration test boots its own Postgres/Kafka via
+# testcontainers (no DATABASE_URL, no docker compose, no t.Skip gate --
+# TestPostgresIntegrationTestsUseTestcontainers enforces it).
 # Deliberately NOT part of `check` / `check-all`.
-# NOTE: never embed a real password in a postgres://user:pass@host URL in
-# committed files -- some environments' own tooling treats that shape as a
-# credential leak and will silently strip it. Use a separate PGPASSWORD (or
-# your driver's password-injection API) instead. See HARNESS.md.
 integration:
 	$(GO) test -tags=integration ./... -race -count=1
 
@@ -146,3 +142,17 @@ check: fmt-check vet build lint test
 # The fuller gate a human runs before pushing. Still excludes `integration`
 # (needs a DB) and `mutation` (slow).
 check-all: check coverage arch-test bdd
+
+# --- agent harness (harness-template v3) -----------------------------------
+.PHONY: check-fast guide-lint harness-test
+# Fast local gate used by the agent Stop hook: format, vet, fitness tests, and the tests of
+# the packages changed vs HEAD. The full gate stays `make check` / `make check-all`.
+check-fast: fmt-check vet arch-test
+	@pkgs="$$(python3 scripts/harness/hook.py changed-pkgs)"; \
+	if [ -n "$$pkgs" ]; then go test $$pkgs; else echo "check-fast: no changed Go packages"; fi
+
+guide-lint: ## lint agent guides: skills load, references resolve, context budget
+	python3 scripts/harness/guide_lint.py
+
+harness-test: ## unit-test the agent hooks (pre/post/stop)
+	python3 scripts/harness/test_hook.py
