@@ -98,6 +98,35 @@ already-lived incident, not a hypothetical:
   2026-09-30 cutover made CloudEvents 1.0 the only envelope; this test
   fails CI on any envelope toggle identifier or a struct declaring both
   the flat `event_id` and `event_type` JSON tags.
+- **TestMCPOptionalToolInputsCarryOmitempty** (`mcp_optional_inputs_test.go`,
+  + `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) — report tools in five
+  contexts described filters as optional while their input structs had no
+  `omitempty`, so the MCP Go SDK published them as REQUIRED and every call
+  without the filter failed with `missing properties` (ecosystem gaps
+  2026-10, D16). A field whose `jsonschema` description says "optional" must
+  carry `omitempty`. Skips when the service has no
+  `internal/adapters/inbound/mcp`.
+- **TestOutboxRelaysPassAttemptCap** (`outbox_relay_cap_fitness_test.go`,
+  + `TestOutboxRelayCapSensorFailsOnBadFixtures`,
+  `TestOutboxRelayDeclarationDetector`) — inventory-storage's relay had no
+  attempt cap, so one row that could never be sent blocked the relay forever
+  (ecosystem gaps 2026-10, D12). Every `NewOutboxRelay(...)` under `cmd/`
+  passes `WithMaxAttempts(...)` (env `OUTBOX_MAX_ATTEMPTS`, default 20,
+  `0` = unlimited), and a relay package that declares `NewOutboxRelay` must
+  also offer `WithMaxAttempts`. Skips when the service has no outbox relay.
+
+These two files are template-owned starting points, NOT in
+`tools/migrate_v3.py`'s `MANAGED` list: every existing context already carries
+its own copy (with its own ADR number in the message, and in one repo under a
+different file name), so a byte-for-byte sync would duplicate the test
+functions. A new service gets them by instantiation.
+
+Projector liveness (ecosystem gaps 2026-10, D13: an analytics projector whose
+consumer loop exits must stop, not keep serving `/readyz`) has no fitness test:
+the template has no projector. Each projector guards it with its own unit test
+of the stop path (process-path-management `TestAwaitStop_ConsumerLoopExitIsAnError`,
+workforce-management `TestSuperviseConsumer_*`); copy that shape when a new
+service adds a projector.
 
 ## Mutation testing: what it catches that coverage doesn't
 
