@@ -107,6 +107,7 @@ already-lived incident, not a hypothetical:
   carry `omitempty`. Skips when the service has no
   `internal/adapters/inbound/mcp`.
 - **TestOutboxRelaysPassAttemptCap** (`outbox_relay_cap_fitness_test.go`,
+- `internal/architecture/kafka_writer_acks_fitness_test.go` - every production kafka-go `Writer{...}` literal must set `RequiredAcks` (kafka-go defaults to acks=0, fire-and-forget). `TestKafkaWriterAcksSensorBites` proves the sensor fails on bad fixtures.
   + `TestOutboxRelayCapSensorFailsOnBadFixtures`,
   `TestOutboxRelayDeclarationDetector`) — inventory-storage's relay had no
   attempt cap, so one row that could never be sent blocked the relay forever
