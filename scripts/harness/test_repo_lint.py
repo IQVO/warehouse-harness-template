@@ -383,6 +383,258 @@ class RepoLint(unittest.TestCase):
     def test_empty_repo_is_clean(self):
         self.assertEqual(lint(make({"README.md": "x\n"}))[0], 0)
 
+    # ---- R8: docs built on pull requests ---------------------------------------------------------------
+    DOCS_PUSH_ONLY = """
+        name: Docs
+        on:
+          push:
+            branches: [main]
+            paths: ["docs/**"]
+          workflow_dispatch: {}
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - run: npm run build
+          deploy:
+            needs: build
+            runs-on: ubuntu-latest
+            steps:
+              - uses: actions/deploy-pages@v5
+    """
+    DOCS_OK = """
+        name: Docs
+        on:
+          push:
+            branches: [main]
+            paths: ["docs/**"]
+          pull_request:
+            paths: ["docs/**"]
+          workflow_dispatch: {}
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - run: npm run build
+          deploy:
+            if: github.event_name != 'pull_request'
+            needs: build
+            runs-on: ubuntu-latest
+            steps:
+              - uses: actions/deploy-pages@v5
+    """
+
+    def test_r8_incident_docs_workflow_runs_only_on_push_to_main(self):
+        code, out = lint(make({".github/workflows/docs.yml": self.DOCS_PUSH_ONLY}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("[R8]", out)
+        self.assertIn("pull_request", out)
+        self.assertIn("FIX:", out)
+
+    def test_r8_pull_request_trigger_and_gated_deploy_is_fine(self):
+        code, out = lint(make({".github/workflows/docs.yml": self.DOCS_OK}))
+        self.assertEqual(code, 0, out)
+
+    def test_r8_pull_request_trigger_but_deploy_not_gated(self):
+        wf = self.DOCS_OK.replace("            if: github.event_name != 'pull_request'\n", "")
+        code, out = lint(make({".github/workflows/docs.yml": wf}))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("[R8]"), 1, out)
+        self.assertIn("`deploy`", out)
+
+    def test_r8_inline_trigger_list_and_pages_workflow_under_another_name(self):
+        wf = self.DOCS_PUSH_ONLY.replace("on:\n          push:\n            branches: [main]\n            paths: [\"docs/**\"]\n"
+                                         "          workflow_dispatch: {}\n", "on: [push, pull_request_target]\n")
+        code, out = lint(make({".github/workflows/pages.yml": wf}))
+        self.assertEqual(code, 1, out)          # pull_request_target is not a build-on-PR trigger
+        self.assertIn("[R8]", out)
+        wf_ok = wf.replace("on: [push, pull_request_target]", "on: [push, pull_request]").replace(
+            "          deploy:\n", "          deploy:\n            if: github.ref == 'refs/heads/main'\n")
+        code, out = lint(make({".github/workflows/pages.yml": wf_ok}))
+        self.assertEqual(code, 0, out)
+
+    def test_r8_not_a_docs_workflow(self):
+        wf = "name: CI\non:\n  push:\n    branches: [main]\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: true\n"
+        self.assertEqual(lint(make({".github/workflows/ci.yml": wf}))[0], 0)
+
+    # ---- R9: chart tests run in CI ----------------------------------------------------------------------
+    CI_NO_CHART_TESTS = """
+        name: CI
+        on: push
+        jobs:
+          test:
+            runs-on: ubuntu-latest
+            steps:
+              - uses: actions/checkout@v7
+              - run: go test ./...
+    """
+
+    def test_r9_incident_chart_tests_exist_but_no_workflow_runs_them(self):
+        files = {".github/workflows/ci.yml": self.CI_NO_CHART_TESTS,
+                 "charts/svc/tests/test_service_selectors.py": "print('ok')\n",
+                 "charts/svc/tests/render_test.sh": "echo ok\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("[R9]"), 2, out)
+        self.assertIn("charts/svc/tests/test_service_selectors.py", out)
+        self.assertIn("chart-tests", out)       # the FIX names the job to copy
+
+    def test_r9_tests_named_in_run_steps_are_fine(self):
+        wf = self.CI_NO_CHART_TESTS.rstrip(" ") + (
+            "          chart-tests:\n"
+            "            runs-on: ubuntu-latest\n"
+            "            steps:\n"
+            "              - uses: actions/checkout@v7\n"
+            "              - run: bash charts/svc/tests/render_test.sh\n"
+            "              - run: python3 charts/svc/tests/test_service_selectors.py\n")
+        files = {".github/workflows/ci.yml": wf,
+                 "charts/svc/tests/test_service_selectors.py": "print('ok')\n",
+                 "charts/svc/tests/render_test.sh": "echo ok\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    def test_r9_glob_loop_and_test_run_by_another_test(self):
+        wf = self.CI_NO_CHART_TESTS.rstrip(" ") + (
+            "          chart-tests:\n"
+            "            runs-on: ubuntu-latest\n"
+            "            steps:\n"
+            "              - uses: actions/checkout@v7\n"
+            "              - run: |\n"
+            "                  for t in charts/svc/tests/test_*.py; do python3 \"$t\"; done\n"
+            "                  bash charts/svc/tests/render_test.sh\n")
+        files = {".github/workflows/ci.yml": wf,
+                 "charts/svc/tests/test_a.py": "print('ok')\n",
+                 "charts/svc/tests/test_b.py": "print('ok')\n",
+                 "charts/svc/tests/render_test.sh": "sh \"$(dirname \"$0\")/render-assertions.sh\"\n",
+                 "charts/svc/tests/render-assertions.sh": "echo ok\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    def test_r9_comment_mention_does_not_count_but_make_target_does(self):
+        wf = self.CI_NO_CHART_TESTS.rstrip(" ") + "          # chart tests: charts/svc/tests/render_test.sh (not wired yet)\n"
+        files = {".github/workflows/ci.yml": wf, "charts/svc/tests/render_test.sh": "echo ok\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        self.assertIn("[R9]", out)
+        wf_make = self.CI_NO_CHART_TESTS.replace("go test ./...", "make check chart-test")
+        files = {".github/workflows/ci.yml": wf_make, "charts/svc/tests/render_test.sh": "echo ok\n",
+                 "Makefile": "check: vet\n\tgo test ./...\n\nvet:\n\tgo vet ./...\n\nchart-test: helm-dep\n\tbash charts/svc/tests/render_test.sh\n\nhelm-dep:\n\ttrue\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    def test_r9_make_target_that_ci_does_not_run_is_not_enough(self):
+        files = {".github/workflows/ci.yml": self.CI_NO_CHART_TESTS.replace("go test ./...", "make check"),
+                 "charts/svc/tests/render_test.sh": "echo ok\n",
+                 "Makefile": "check:\n\tgo test ./...\n\nchart-test:\n\tbash charts/svc/tests/render_test.sh\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        self.assertIn("[R9]", out)
+
+    def test_r9_helpers_and_ignored_files_are_not_tests(self):
+        files = {".github/workflows/ci.yml": self.CI_NO_CHART_TESTS,
+                 "charts/svc/tests/helpers.py": "def f(): pass\n",
+                 "charts/svc/tests/README.md": "x\n",
+                 "charts/svc/tests/manual_test.sh": "# repo-lint: ignore needs a live cluster\necho\n"}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    # ---- R10: chart ConfigMaps are mounted --------------------------------------------------------------
+    CM = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: {{ include "svc.fullname" . }}
+          labels:
+            app: svc
+        data:
+          OUTBOX_RELAY_INTERVAL: {{ .Values.config.outboxRelayInterval | quote }}
+    """
+    DEPLOY_NO_ENVFROM = """
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: {{ include "svc.fullname" . }}
+        spec:
+          template:
+            spec:
+              containers:
+                - name: api
+                  env:
+                    - name: PORT
+                      value: "8080"
+    """
+
+    def test_r10_incident_configmap_no_deployment_mounts(self):
+        files = {"charts/svc/templates/configmap.yaml": self.CM,
+                 "charts/svc/templates/deployment.yaml": self.DEPLOY_NO_ENVFROM}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        self.assertIn("[R10]", out)
+        self.assertIn("charts/svc/templates/configmap.yaml", out)
+        self.assertIn("envFrom", out)
+
+    def test_r10_envfrom_configmapref_mounts_it(self):
+        deploy = self.DEPLOY_NO_ENVFROM.replace(
+            "                  env:\n",
+            "                  envFrom:\n"
+            "                    - configMapRef:\n"
+            "                        name: {{ include \"svc.fullname\" . }}\n"
+            "                  env:\n")
+        files = {"charts/svc/templates/configmap.yaml": self.CM, "charts/svc/templates/deployment.yaml": deploy}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    def test_r10_suffix_names_volume_printf_and_no_cross_match(self):
+        # base ConfigMap + a -path-catalogue one; only the catalogue is mounted (volume, printf form)
+        cat = self.CM.replace('{{ include "svc.fullname" . }}', '{{ include "svc.fullname" . }}-path-catalogue')
+        deploy = self.DEPLOY_NO_ENVFROM.rstrip(" ") + (
+            "              volumes:\n"
+            "                - name: catalogue\n"
+            "                  configMap:\n"
+            "                    name: {{ .Values.pathCatalogue.existingConfigMap | default (printf \"%s-path-catalogue\" (include \"svc.fullname\" .)) }}\n")
+        files = {"charts/svc/templates/configmap.yaml": self.CM,
+                 "charts/svc/templates/configmap-pathcatalogue.yaml": cat,
+                 "charts/svc/templates/deployment.yaml": deploy}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("[R10]"), 1, out)              # the base one, not the catalogue
+        self.assertIn("charts/svc/templates/configmap.yaml", out)
+        self.assertNotIn("configmap-pathcatalogue.yaml", out)
+
+    def test_r10_configmapkeyref_cronjob_and_multi_document(self):
+        two = self.CM.rstrip(" ") + "        ---\n" + self.CM.replace('{{ include "svc.fullname" . }}', "{{ include \"svc.fullname\" . }}-jobs")
+        cron = """
+            apiVersion: batch/v1
+            kind: CronJob
+            spec:
+              jobTemplate:
+                spec:
+                  template:
+                    spec:
+                      containers:
+                        - name: sweep
+                          env:
+                            - name: X
+                              valueFrom:
+                                configMapKeyRef:
+                                  name: {{ include "svc.fullname" . }}-jobs
+                                  key: X
+                          envFrom:
+                            - configMapRef: {name: '{{ include "svc.fullname" . }}'}
+        """
+        files = {"charts/svc/templates/configmap.yaml": two, "charts/svc/templates/cronjob.yaml": cron}
+        code, out = lint(make(files))
+        self.assertEqual(code, 0, out)
+
+    def test_r10_reference_from_a_non_workload_does_not_count_and_ignore_marker(self):
+        # a ConfigMap that only another ConfigMap/Service mentions is still unmounted
+        other = "apiVersion: v1\nkind: Service\nmetadata:\n  name: x\n  annotations:\n    configMap:\n      name: {{ include \"svc.fullname\" . }}\n"
+        files = {"charts/svc/templates/configmap.yaml": self.CM, "charts/svc/templates/service.yaml": other}
+        code, out = lint(make(files))
+        self.assertEqual(code, 1, out)
+        dash = self.CM.replace("kind: ConfigMap", "kind: ConfigMap  # repo-lint: ignore Grafana sidecar picks it up by label")
+        self.assertEqual(lint(make({"charts/svc/templates/dash.yaml": dash}))[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

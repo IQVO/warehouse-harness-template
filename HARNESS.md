@@ -98,6 +98,35 @@ already-lived incident, not a hypothetical:
   2026-09-30 cutover made CloudEvents 1.0 the only envelope; this test
   fails CI on any envelope toggle identifier or a struct declaring both
   the flat `event_id` and `event_type` JSON tags.
+- **TestMCPOptionalToolInputsCarryOmitempty** (`mcp_optional_inputs_test.go`,
+  + `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) — report tools in five
+  contexts described filters as optional while their input structs had no
+  `omitempty`, so the MCP Go SDK published them as REQUIRED and every call
+  without the filter failed with `missing properties` (ecosystem gaps
+  2026-10, D16). A field whose `jsonschema` description says "optional" must
+  carry `omitempty`. Skips when the service has no
+  `internal/adapters/inbound/mcp`.
+- **TestOutboxRelaysPassAttemptCap** (`outbox_relay_cap_fitness_test.go`,
+  + `TestOutboxRelayCapSensorFailsOnBadFixtures`,
+  `TestOutboxRelayDeclarationDetector`) — inventory-storage's relay had no
+  attempt cap, so one row that could never be sent blocked the relay forever
+  (ecosystem gaps 2026-10, D12). Every `NewOutboxRelay(...)` under `cmd/`
+  passes `WithMaxAttempts(...)` (env `OUTBOX_MAX_ATTEMPTS`, default 20,
+  `0` = unlimited), and a relay package that declares `NewOutboxRelay` must
+  also offer `WithMaxAttempts`. Skips when the service has no outbox relay.
+
+These two files are template-owned starting points, NOT in
+`tools/migrate_v3.py`'s `MANAGED` list: every existing context already carries
+its own copy (with its own ADR number in the message, and in one repo under a
+different file name), so a byte-for-byte sync would duplicate the test
+functions. A new service gets them by instantiation.
+
+Projector liveness (ecosystem gaps 2026-10, D13: an analytics projector whose
+consumer loop exits must stop, not keep serving `/readyz`) has no fitness test:
+the template has no projector. Each projector guards it with its own unit test
+of the stop path (process-path-management `TestAwaitStop_ConsumerLoopExitIsAnError`,
+workforce-management `TestSuperviseConsumer_*`); copy that shape when a new
+service adds a projector.
 
 ## Mutation testing: what it catches that coverage doesn't
 
@@ -192,8 +221,15 @@ idempotent and is also the engine of the weekly template sync.
 reached CI in practice: **R1** workflow `working-directory`/`cache-dependency-path` that do not exist (checkout-path
 aware), **R2** `needs:` naming jobs that do not exist, **R3** Dependabot entries that cannot work (missing directory or
 manifest; an npm tree with a `file:` dependency outside the repo), **R4** a stale GitHub owner in registry/docs/chart
-URLs, **R5** unsubstituted `{{PLACEHOLDER}}`s. `# repo-lint: ignore` suppresses one line (say why). Tests:
-`scripts/harness/test_repo_lint.py`; two cases are the real incidents and must keep failing the lint.
+URLs, **R5** unsubstituted `{{PLACEHOLDER}}`s, **R6** missing Dependabot coverage, **R7** repo scripts a workflow runs
+from the wrong directory, **R8** a docs workflow that does not build on `pull_request` (or whose Pages deploy job is not
+gated off PRs), **R9** a chart test (`charts/<c>/tests/*.sh`, `test_*.py`) that no workflow runs (directly, through a
+`make` target CI runs, or from another chart test), **R10** a chart ConfigMap that no Deployment/workload in the chart
+references (`envFrom.configMapRef`, `configMapKeyRef`, `configMap` volume). `# repo-lint: ignore` suppresses one line
+(say why; for R9 put it in the first lines of the test, for R10 on the ConfigMap's `kind:` line). Tests:
+`scripts/harness/test_repo_lint.py`; the cases named `incident` are the real incidents and must keep failing the lint.
+`ci.yml.template` ships the matching `chart-tests` job (every chart test, PyYAML installed hash-pinned from
+`.github/requirements/chart-tests.txt`, a test printing SKIP fails).
 
 **Incident protocol.** Every failure that was not caught before CI ends with: the fix, a sensor or guide that would have
 caught it, that sensor rolled out to the whole fleet, and a row in [INCIDENTS.md](INCIDENTS.md). A row with no guard is

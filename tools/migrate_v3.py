@@ -43,7 +43,8 @@ MANAGED = [
     "scripts/harness/guide_lint.py",
     "scripts/harness/red_issue.py",
     "scripts/harness/fleet_drift.py",
-    "scripts/harness/repo_lint.py",       # config sensors: workflow paths, needs, dependabot, owner drift, placeholders
+    "scripts/harness/repo_lint.py",       # config sensors: workflow paths, needs, dependabot, owner drift, placeholders,
+                                          # docs built on PRs, chart tests run in CI, chart ConfigMaps mounted
     "scripts/harness/test_repo_lint.py",
     ".claude/settings.json",
     ".codex/hooks.json",

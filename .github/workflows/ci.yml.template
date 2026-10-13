@@ -345,6 +345,57 @@ jobs:
         run: ct lint --charts charts/{{SERVICE_REPO}} --validate-maintainers=false --check-version-increment=false
 
   # ============================================================
+  # CLASSIFICATION: PACKAGING (Helm chart tests)
+  # Runs on EVERY push and PR (unlike helm-lint): the chart tests guard
+  # behaviour, not packaging -- the env ConfigMap mounted via envFrom (gap
+  # fix D14), every Service selecting exactly one Deployment, Kong config.
+  # Every charts/{{SERVICE_REPO}}/tests/*.sh and test_*.py runs here (repo_lint
+  # R9 fails a chart test no workflow runs). PyYAML is installed hash-pinned
+  # (Scorecard Pinned-Dependencies), and a test that prints SKIP fails the
+  # job: a selector test must never pass vacuously.
+  # ============================================================
+  chart-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install PyYAML (hash-pinned)
+        run: python3 -m pip install --require-hashes -r .github/requirements/chart-tests.txt
+      - name: Chart tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(charts/{{SERVICE_REPO}}/tests/*.sh charts/{{SERVICE_REPO}}/tests/test_*.py)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::warning::no chart tests in charts/{{SERVICE_REPO}}/tests: add a render test asserting the envFrom mount and a Service selector test"
+            exit 0
+          fi
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            status=0
+            case "$t" in
+              *.sh) out=$(bash "$t" 2>&1) || status=$? ;;
+              *) out=$(python3 "$t" 2>&1) || status=$? ;;
+            esac
+            echo "$out"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$t failed"
+              exit "$status"
+            fi
+            if grep -q '^SKIP' <<<"$out"; then
+              echo "::error::$t printed SKIP: a chart test must not pass vacuously (is PyYAML or helm missing?)"
+              exit 1
+            fi
+          done
+
+  # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (architecture fitness)
   # ============================================================
   arch-test:
