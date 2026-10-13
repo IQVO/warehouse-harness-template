@@ -221,8 +221,15 @@ idempotent and is also the engine of the weekly template sync.
 reached CI in practice: **R1** workflow `working-directory`/`cache-dependency-path` that do not exist (checkout-path
 aware), **R2** `needs:` naming jobs that do not exist, **R3** Dependabot entries that cannot work (missing directory or
 manifest; an npm tree with a `file:` dependency outside the repo), **R4** a stale GitHub owner in registry/docs/chart
-URLs, **R5** unsubstituted `{{PLACEHOLDER}}`s. `# repo-lint: ignore` suppresses one line (say why). Tests:
-`scripts/harness/test_repo_lint.py`; two cases are the real incidents and must keep failing the lint.
+URLs, **R5** unsubstituted `{{PLACEHOLDER}}`s, **R6** missing Dependabot coverage, **R7** repo scripts a workflow runs
+from the wrong directory, **R8** a docs workflow that does not build on `pull_request` (or whose Pages deploy job is not
+gated off PRs), **R9** a chart test (`charts/<c>/tests/*.sh`, `test_*.py`) that no workflow runs (directly, through a
+`make` target CI runs, or from another chart test), **R10** a chart ConfigMap that no Deployment/workload in the chart
+references (`envFrom.configMapRef`, `configMapKeyRef`, `configMap` volume). `# repo-lint: ignore` suppresses one line
+(say why; for R9 put it in the first lines of the test, for R10 on the ConfigMap's `kind:` line). Tests:
+`scripts/harness/test_repo_lint.py`; the cases named `incident` are the real incidents and must keep failing the lint.
+`ci.yml.template` ships the matching `chart-tests` job (every chart test, PyYAML installed hash-pinned from
+`.github/requirements/chart-tests.txt`, a test printing SKIP fails).
 
 **Incident protocol.** Every failure that was not caught before CI ends with: the fix, a sensor or guide that would have
 caught it, that sensor rolled out to the whole fleet, and a row in [INCIDENTS.md](INCIDENTS.md). A row with no guard is
