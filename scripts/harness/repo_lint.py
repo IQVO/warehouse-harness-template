@@ -39,6 +39,12 @@ Checks
                       (`envFrom.configMapRef`, `configMapKeyRef`, or a `configMap` volume).
                       (incident: 8 charts rendered `config.*` values into a ConfigMap no Deployment mounted, so
                       every value silently did nothing, ecosystem gaps 2026-10, D14)
+  R11 coverage-scope  the coverage package set (`-coverpkg`) is defined ONLY in the Makefile `coverage` target and CI
+                      runs it: no workflow `run:` line may pass `-coverpkg` itself, and when the Makefile has a
+                      coverage gate some workflow must run `make coverage` (directly or through a target that has
+                      it as a prerequisite). In this template repository `ci.yml.template` counts as a workflow.
+                      (incident 16d: process-path-management and warehouse-ops-agent measured a different package
+                      set in CI than `make coverage`, so the local gate and the PR gate disagreed silently)
 
 Usage: repo_lint.py [--root .] [--stale-owners claudioed,other]   exit 0 clean, 1 findings.
 Suppress one line with the text `repo-lint: ignore` on it (use sparingly, say why).
@@ -443,8 +449,8 @@ def make_recipes(root):
     return {k: (v[0], "\n".join(v[1])) for k, v in rules.items()}
 
 
-def make_text_run_by(ci_text, recipes):
-    """Recipe text of every make target a workflow runs (and their prerequisites, transitively)."""
+def make_targets_run_by(ci_text, recipes):
+    """-> [target] for every make target a workflow runs (and their prerequisites, transitively), in visit order."""
     todo = []
     for m in re.finditer(r"\bmake[ \t]+((?:-[A-Za-z][ \t]+\S+[ \t]+|[A-Za-z0-9_.-]+[ \t]*)+)", ci_text):
         todo += [t for t in m.group(1).split() if not t.startswith("-") and "=" not in t]
@@ -454,10 +460,14 @@ def make_text_run_by(ci_text, recipes):
         if t in seen or t not in recipes:
             continue
         seen.add(t)
-        prereq, recipe = recipes[t]
-        todo += prereq
-        out.append(recipe)
-    return "\n".join(out)
+        todo += recipes[t][0]
+        out.append(t)
+    return out
+
+
+def make_text_run_by(ci_text, recipes):
+    """Recipe text of every make target a workflow runs (and their prerequisites, transitively)."""
+    return "\n".join(recipes[t][1] for t in make_targets_run_by(ci_text, recipes))
 
 
 def covered_by(text, test, root):
@@ -566,6 +576,52 @@ def check_configmaps_mounted(root):
                         "workloads (e.g. a Grafana sidecar) takes `# repo-lint: ignore <why>` on its `kind:` line")
 
 
+# ---- R11: the coverage scope has one source of truth (the Makefile) -------------------------------------
+COVERPKG_RX = re.compile(r"(?:^|\s)-coverpkg[=\s]")
+
+
+def coverage_workflows(root):
+    """Workflows that define a service's CI. In the template repository ci.yml.template IS the service CI."""
+    out = workflows(root)
+    out += sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml.template")))
+    return out
+
+
+def makefile_line(root, target):
+    for i, l in enumerate(read(os.path.join(root, "Makefile")).splitlines(), 1):
+        if re.match(rf"^(?:[A-Za-z0-9_.-]+\s+)*{re.escape(target)}(?:\s+[A-Za-z0-9_.-]+)*\s*:(?!=)", l):
+            return i
+    return 0
+
+
+def check_coverage_scope(root):
+    """R11: the Makefile `coverage` target owns the coverage package set; CI runs it instead of copying it."""
+    wfs = coverage_workflows(root)
+    for w in wfs:
+        rp = rel(root, w)
+        for i, l in enumerate(read(w).splitlines(), 1):
+            if l.lstrip().startswith("#") or "repo-lint: ignore" in l:
+                continue
+            if COVERPKG_RX.search(l):
+                err("R11", rp, i, "a workflow step defines its own coverage package set (`-coverpkg`)",
+                    "the Makefile `coverage` target is the single source of the coverage scope; a second copy here "
+                    "drifts (incident 16d: CI and `make coverage` measured different package sets, so the local and "
+                    "PR gates disagreed without anyone noticing)",
+                    "replace the coverage test + gate steps with `run: make coverage` and change the scope or the "
+                    "threshold only in the Makefile")
+    recipes = make_recipes(root)
+    if not wfs or "coverage" not in recipes or "-coverpkg" not in recipes["coverage"][1]:
+        return  # no workflow to compare, or no scoped coverage gate to protect
+    ci_text = "\n".join(uncommented(read(w)) for w in wfs)
+    if "coverage" in make_targets_run_by(ci_text, recipes):
+        return
+    err("R11", "Makefile", makefile_line(root, "coverage"),
+        "the Makefile defines a coverage gate (`coverage` target with `-coverpkg`) but no workflow runs it",
+        "the gate then runs only on laptops, or CI re-implements it with its own package set and drifts (incident 16d)",
+        "run the gate in CI with a `run: make coverage` step in the unit-test job (or a `make` target that has "
+        "`coverage` as a prerequisite)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -581,6 +637,7 @@ def main():
     check_placeholders(root)
     check_chart_tests(root)
     check_configmaps_mounted(root)
+    check_coverage_scope(root)
     for e in errors:
         print(e)
     print(f"repo-lint: {len(errors)} error(s)")
