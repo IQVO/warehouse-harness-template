@@ -107,7 +107,6 @@ already-lived incident, not a hypothetical:
   carry `omitempty`. Skips when the service has no
   `internal/adapters/inbound/mcp`.
 - **TestOutboxRelaysPassAttemptCap** (`outbox_relay_cap_fitness_test.go`,
-- `internal/architecture/kafka_writer_acks_fitness_test.go` - every production kafka-go `Writer{...}` literal must set `RequiredAcks` (kafka-go defaults to acks=0, fire-and-forget). `TestKafkaWriterAcksSensorBites` proves the sensor fails on bad fixtures.
   + `TestOutboxRelayCapSensorFailsOnBadFixtures`,
   `TestOutboxRelayDeclarationDetector`) — inventory-storage's relay had no
   attempt cap, so one row that could never be sent blocked the relay forever
@@ -115,8 +114,34 @@ already-lived incident, not a hypothetical:
   passes `WithMaxAttempts(...)` (env `OUTBOX_MAX_ATTEMPTS`, default 20,
   `0` = unlimited), and a relay package that declares `NewOutboxRelay` must
   also offer `WithMaxAttempts`. Skips when the service has no outbox relay.
+- `internal/architecture/kafka_writer_acks_fitness_test.go` - every production kafka-go `Writer{...}` literal must set `RequiredAcks` (kafka-go defaults to acks=0, fire-and-forget). `TestKafkaWriterAcksSensorBites` proves the sensor fails on bad fixtures.
+- **TestDeadLetterCallsGuardCancellation** (`kafka_dlq_shutdown_fitness_test.go`,
+  + `TestDeadLetterShutdownSensorBites`) — on shutdown a consumer's handler
+  failed because its context was cancelled, the retry gave up, and the loop
+  dead-lettered a good message and committed past it (network-fulfillment#89
+  and eight more repos, gap 18b). Every function under
+  `internal/adapters/inbound/kafka` that sends to the dead-letter topic must
+  reference `ctx.Err()` or `context.Canceled` itself, or mark the call
+  `//dlq:deterministic <reason>` when the error can only be a deterministic
+  poison failure (a payload that does not decode, a domain refusal). A guard
+  in the CALLER does not count: before #89 the consume loop already checked
+  `context.Canceled` on `FetchMessage` while `handleMessage` dead-lettered
+  unguarded. Dead-letter functions themselves (`deadLetter`, `dlqPublish`,
+  `deadLetterSink.send`, a func literal bound to a `deadLetter` field)
+  delegate the guard to their callers. Skips when the service has no
+  `internal/adapters/inbound/kafka`.
+- **TestKafkaWriterTopicNotSetTwice** (`kafka_writer_topic_fitness_test.go`,
+  + `TestKafkaWriterTopicSensorBites`) — kafka-go refuses every write whose
+  `Message.Topic` is set when the `Writer` has a `Topic` too, so
+  warehouse-planning's and slotting-optimization's dead letters never landed
+  (gap E6). In a package where any kafka-go `Message{...}` literal sets
+  `Topic`, no `Writer{...}` literal may set `Topic`, unless it carries
+  `//kafka:fixed-topic-writer <reason>` and no Topic-setting Message provably
+  reaches it (resolved through the writer's variable/field/constructor and
+  the writer each Message is written through).
 
-These two files are template-owned starting points, NOT in
+These files (the outbox, MCP, Kafka-acks, dead-letter and writer-topic
+sensors) are template-owned starting points, NOT in
 `tools/migrate_v3.py`'s `MANAGED` list: every existing context already carries
 its own copy (with its own ADR number in the message, and in one repo under a
 different file name), so a byte-for-byte sync would duplicate the test
