@@ -31,6 +31,8 @@ jobs:
         run: |
           go vet ./internal/architecture/
           go test ./internal/architecture/
+      - name: Scaffold self-test (new-service.sh output; runtime and root-layout sensors red then green)
+        run: bash scripts/scaffold-selftest.sh
       - name: Migration tool is idempotent on a fresh Go repo
         run: |
           set -euo pipefail

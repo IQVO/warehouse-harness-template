@@ -139,9 +139,26 @@ already-lived incident, not a hypothetical:
   `//kafka:fixed-topic-writer <reason>` and no Topic-setting Message provably
   reaches it (resolved through the writer's variable/field/constructor and
   the writer each Message is written through).
+- **TestRuntimeBinaryHasNoInMemoryAdapters** (`runtime_no_memory_fitness_test.go`,
+  + `TestRuntimeBinarySensorBites`) — fleet decision 2026-10-17: new contexts
+  run only on real Postgres and real Kafka; `internal/adapters/outbound/memory`
+  is a test double. No non-test file under `cmd/**` may import it (plain,
+  aliased, blank, dot or nested import). pick-face-replenishment and
+  task-interleaving each needed a rework because their `cmd/api` fell back to
+  the memory adapters. Skips only while `cmd/` does not exist (a fresh
+  scaffold); a `cmd/` with no binary fails.
+- **TestNoGoFilesAtRepoRoot** (`no_go_files_at_root_fitness_test.go`,
+  + `TestNoGoFilesAtRepoRootSensorBites`) — the module root holds no `.go`
+  file, production or test. The godog runner lives in `features/`
+  (`package features_test`, `Paths: "."`; `make bdd` still finds
+  `TestFeatures`), binaries in `cmd/<name>/`, packages in `internal/`.
 
-These files (the outbox, MCP, Kafka-acks, dead-letter and writer-topic
-sensors) are template-owned starting points, NOT in
+`scripts/scaffold-selftest.sh` (CI: `Template self-test`) generates a
+throwaway service with `new-service.sh` and proves both sensors red then green,
+and that the generated packaging files carry no placeholder.
+
+These files (the outbox, MCP, Kafka-acks, dead-letter, writer-topic, runtime
+and root-layout sensors) are template-owned starting points, NOT in
 `tools/migrate_v3.py`'s `MANAGED` list: every existing context already carries
 its own copy (with its own ADR number in the message, and in one repo under a
 different file name), so a byte-for-byte sync would duplicate the test
@@ -201,7 +218,14 @@ placeholder, and — for a Kafka service (subdomain `wms`|`wes` + the
 bounded-context segment of its CloudEvents `type`) — generates
 `internal/adapters/kafka/cloudevents/` from `templates/cloudevents/`, and tells you which files still need
 manual content (the `.claude/rules/*.md` skeletons, `.gremlins.yaml`'s
-measured thresholds). See `scripts/new-service.sh`'s own header comment for
+measured thresholds). It also generates the packaging a first release needs:
+`Dockerfile` and `.dockerignore` (from `templates/packaging/`, build every
+`cmd/*`) and `docs/before-first-release.md`, a checklist that names each
+packaging item (Helm chart named after the repo, chart tests, `DATABASE_URL`
+from a Secret, pod hardening, shutdown grace period, consumer-group values,
+repository secrets) and the sensor or CI job that guards it. The chart itself is
+not generated: it depends on what the service runs, so copy the closest
+sibling's. See `scripts/new-service.sh`'s own header comment for
 the full instantiation checklist.
 
 ## Agent runtime harness (v3): one logic, three runtimes

@@ -33,6 +33,10 @@ See `scripts/new-service.sh`'s header comment, or `HARNESS.md`'s
 "Instantiating this template" section, for the full checklist —
 substitution is only step one; `.claude/rules/*.md` content and
 `.gremlins.yaml`'s measured thresholds still need real code to fill in.
+A fresh scaffold also ships the runtime-binary and repo-root layout sensors
+(`internal/architecture/`) and a generated `Dockerfile`, `.dockerignore` and
+`docs/before-first-release.md`: work through that checklist before the first
+release.
 
 ## Study project
 
