@@ -1,0 +1,9 @@
+id: package-diverted-event
+repo: fulfillment-execution
+kind: feature
+source_incident: null
+why: >
+  Round 3's second repo, pre-registered convention gates. Catches whether the type-catalogue/context-map
+  finding from stock-event (inventory-storage) generalizes to a second bounded context, or was repo-specific
+  noise -- round 3 already found it did NOT generalize cleanly (context map reversed: bare 3/3 vs full 1/3),
+  which is exactly the kind of result only a repeatable two-repo suite can keep catching instead of re-deriving.

@@ -1,0 +1,9 @@
+id: stock-event
+repo: inventory-storage
+kind: feature
+source_incident: null
+why: >
+  Representative "add an integration event" task. EVALS.md rounds 2/3 ran this exact shape and found the
+  fleet type-catalogue / context-map convention followed about half the time regardless of guides -- this
+  is the task that question needs re-running against every future harness version to get a comparable
+  number instead of a fresh ad hoc eval each time.
