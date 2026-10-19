@@ -1,10 +1,13 @@
 # warehouse-harness-template
 
-Canonical `harness-template: v2` for the [warehouse-systems](https://github.com/claudioed)
+Canonical `harness-template: v4` for the [warehouse-systems](https://github.com/IQVO)
 fleet's Go bounded-context services: `Makefile`, CI workflow, lefthook
 hooks, linter/mutation-testing config, architecture fitness tests
 (hexagonal dependency rules + fleet-wide invariants learned from real
-incidents), and `.claude/` guides (rules, skills, commands).
+incidents), `.claude/` guides (rules, skills, commands, subagents), and
+`.claude/memory/`, `tools/harness_probe.py`, `benchmarks/wms-bench/` —
+the v4 pieces that close the gaps found comparing this harness against
+Google-Research's Harness² (see HARNESS.md's "Harness² comparison (v4)").
 
 This is a **template, not a runnable service** — it has no domain code,
 no `cmd/`, no OpenAPI spec. It exists to answer one question for every
@@ -18,7 +21,7 @@ architecture fitness test was written to prevent from recurring.
 ## Instantiating this template into a new (or existing) repo
 
 ```bash
-git clone https://github.com/claudioed/warehouse-harness-template <new-repo>
+git clone https://github.com/IQVO/warehouse-harness-template <new-repo>
 cd <new-repo>
 rm -rf .git && git init
 bash scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg> [<wms|wes> <event-context>]
