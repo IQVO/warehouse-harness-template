@@ -58,6 +58,17 @@
 #      services) the "Events: CloudEvents 1.0 is MANDATORY" section from
 #      .claude/rules/integration-events.md in its CLAUDE.md/AGENTS.md.
 #   6. lefthook install
+#   7. Work through docs/before-first-release.md (generated) BEFORE the first
+#      develop -> main PR: Dockerfile/.dockerignore are already generated, the
+#      Helm chart and its chart tests are yours to write from the closest
+#      sibling (IQVO/pick-face-replenishment, IQVO/task-interleaving).
+#
+# Two sensors ship in internal/architecture/ and bite from the first commit:
+#   - TestRuntimeBinaryHasNoInMemoryAdapters: cmd/** never imports
+#     internal/adapters/outbound/memory (test doubles only; the fleet runs on
+#     real Postgres and Kafka). Skips only while cmd/ does not exist.
+#   - TestNoGoFilesAtRepoRoot: no .go file at the module root; the godog
+#     runner lives in features/.
 set -euo pipefail
 
 if [[ $# -ne 2 && $# -ne 4 ]]; then
@@ -111,6 +122,40 @@ if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
   gofmt -w "${ce_dir}" 2>/dev/null || true
 else
   echo "  no <event-subdomain>/<event-context>: skipping CloudEvents helper (service has no Kafka I/O)"
+fi
+
+# Packaging (fleet-mandatory before the first release): the Dockerfile and
+# .dockerignore are name-independent and generated verbatim from
+# templates/packaging/. The Helm chart is NOT generated (it is shaped by the
+# consumer groups / MCP / analytics / frontend the service has); instead the
+# "Before the first release" checklist is generated into docs/ and names every
+# packaging item with the sensor or CI job that guards it. Existing files are
+# never overwritten.
+pkg_dir="templates/packaging"
+if [[ -d "${pkg_dir}" ]]; then
+  for pair in "Dockerfile.tmpl:Dockerfile" "dockerignore.tmpl:.dockerignore"; do
+    src="${pkg_dir}/${pair%%:*}"
+    dst="${pair##*:}"
+    if [[ -e "${dst}" ]]; then
+      echo "  kept existing ${dst}"
+    else
+      cp "${src}" "${dst}"
+      echo "  generated ${dst}"
+    fi
+  done
+  mkdir -p docs
+  checklist="docs/before-first-release.md"
+  if [[ -e "${checklist}" ]]; then
+    echo "  kept existing ${checklist}"
+  else
+    sed \
+      -e "s/{{SERVICE_REPO}}/${SERVICE_REPO}/g" \
+      -e "s/{{SERVICE}}/${SERVICE}/g" \
+      "${pkg_dir}/before-first-release.md.tmpl" > "${checklist}"
+    echo "  generated ${checklist} (packaging checklist: chart, chart tests, secrets)"
+  fi
+else
+  echo "::warning:: ${pkg_dir} not found, skipping Dockerfile/.dockerignore/checklist"
 fi
 
 # .gremlins.yaml's {{MEASURED_*}} placeholders are deliberately NOT
