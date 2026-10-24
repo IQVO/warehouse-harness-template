@@ -1,10 +1,8 @@
-package gs1_test
+package gs1
 
 import (
 	"errors"
 	"testing"
-
-	"github.com/claudioed/warehouse-harness-template/internal/domain/shared/gs1"
 )
 
 func TestMod10CheckDigit(t *testing.T) {
@@ -30,7 +28,7 @@ func TestMod10CheckDigit(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := gs1.Mod10CheckDigit(tc.payload)
+			got, err := Mod10CheckDigit(tc.payload)
 			if err != nil {
 				t.Fatalf("Mod10CheckDigit(%q) error = %v", tc.payload, err)
 			}
@@ -55,7 +53,7 @@ func TestMod10CheckDigitRejectsBadPayload(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := gs1.Mod10CheckDigit(tc.payload); !errors.Is(err, gs1.ErrInvalidCheckInput) {
+			if _, err := Mod10CheckDigit(tc.payload); !errors.Is(err, ErrInvalidCheckInput) {
 				t.Fatalf("Mod10CheckDigit(%q) error = %v, want ErrInvalidCheckInput", tc.payload, err)
 			}
 		})
@@ -75,13 +73,16 @@ func TestValidMod10(t *testing.T) {
 		{"376104250021234569", true},
 		{"13041090004825", false}, // off by one
 		{"13041090004820", false},
+		{"00", true}, // shortest valid input: one payload digit and its check digit
+		{"17", true},
+		{"18", false},
 		{"3", false},   // payload empty
 		{"", false},    // nothing
 		{"1A", false},  // not digits
 		{"0000", true}, // zero payload has zero check digit; callers add policy on top
 	}
 	for _, tc := range tests {
-		if got := gs1.ValidMod10(tc.in); got != tc.want {
+		if got := ValidMod10(tc.in); got != tc.want {
 			t.Errorf("ValidMod10(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
@@ -96,7 +97,7 @@ func TestValidMod10DetectsEverySingleDigitError(t *testing.T) {
 				continue
 			}
 			mutated := valid[:i] + string(d) + valid[i+1:]
-			if gs1.ValidMod10(mutated) {
+			if ValidMod10(mutated) {
 				t.Errorf("ValidMod10(%q) = true; single-digit change at %d went undetected", mutated, i)
 			}
 		}
@@ -106,12 +107,12 @@ func TestValidMod10DetectsEverySingleDigitError(t *testing.T) {
 // Swapping two adjacent digits is detected unless they differ by 5 (a known mod-10 blind spot);
 // the test pins the behaviour so a future "improvement" cannot silently change it.
 func TestValidMod10AdjacentTransposition(t *testing.T) {
-	if gs1.ValidMod10("31041090004824") {
+	if ValidMod10("31041090004824") {
 		t.Error("transposition of 1 and 3 must be detected")
 	}
 	// 0 and 5 swapped: 5304... vs 0534... differ by 5, undetected by mod-10 by construction.
-	a, _ := gs1.Mod10CheckDigit("0504109000482")
-	b, _ := gs1.Mod10CheckDigit("5004109000482")
+	a, _ := Mod10CheckDigit("0504109000482")
+	b, _ := Mod10CheckDigit("5004109000482")
 	if a != b {
 		t.Errorf("check digits of 05.. and 50.. should coincide (mod-10 blind spot), got %d and %d", a, b)
 	}

@@ -1,10 +1,8 @@
-package gs1_test
+package gs1
 
 import (
 	"errors"
 	"testing"
-
-	"github.com/claudioed/warehouse-harness-template/internal/domain/shared/gs1"
 )
 
 func TestParseGTINNormalisesToFourteenDigits(t *testing.T) {
@@ -23,12 +21,12 @@ func TestParseGTINNormalisesToFourteenDigits(t *testing.T) {
 		{"gtin-14 each", "03041090004827", "03041090004827", 0, 7},
 		{"gtin-14 case", "13041090004824", "13041090004824", 1, 4},
 		{"gtin-14 pallet", "23041090004821", "23041090004821", 2, 1},
-		{"gtin-14 indicator 8", "83041090004829", "83041090004829", 8, 9},
+		{"gtin-14 indicator 8", "83041090004823", "83041090004823", 8, 3},
 		{"already padded", "00036000291452", "00036000291452", 0, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			g, err := gs1.ParseGTIN(tc.in)
+			g, err := ParseGTIN(tc.in)
 			if err != nil {
 				t.Fatalf("ParseGTIN(%q) error = %v", tc.in, err)
 			}
@@ -49,15 +47,15 @@ func TestParseGTINNormalisesToFourteenDigits(t *testing.T) {
 }
 
 func TestParseGTINEquivalentLengthsAreEqual(t *testing.T) {
-	a, err := gs1.ParseGTIN("036000291452")
+	a, err := ParseGTIN("036000291452")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := gs1.ParseGTIN("0036000291452")
+	b, err := ParseGTIN("0036000291452")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := gs1.ParseGTIN("00036000291452")
+	c, err := ParseGTIN("00036000291452")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +91,8 @@ func TestParseGTINRejects(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			g, err := gs1.ParseGTIN(tc.in)
-			if !errors.Is(err, gs1.ErrInvalidGTIN) {
+			g, err := ParseGTIN(tc.in)
+			if !errors.Is(err, ErrInvalidGTIN) {
 				t.Fatalf("ParseGTIN(%q) error = %v, want ErrInvalidGTIN", tc.in, err)
 			}
 			if !g.IsZero() {
@@ -105,7 +103,7 @@ func TestParseGTINRejects(t *testing.T) {
 }
 
 func TestZeroGTIN(t *testing.T) {
-	var g gs1.GTIN
+	var g GTIN
 	if !g.IsZero() {
 		t.Error("zero value must report IsZero")
 	}
@@ -115,30 +113,30 @@ func TestZeroGTIN(t *testing.T) {
 }
 
 func TestVariableMeasure(t *testing.T) {
-	vm, err := gs1.ParseGTIN("93041090004820")
+	vm, err := ParseGTIN("93041090004820")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !vm.IsVariableMeasure() {
 		t.Error("indicator digit 9 must be variable measure")
 	}
-	if err := gs1.RejectVariableMeasure(vm); !errors.Is(err, gs1.ErrVariableMeasure) {
+	if err := RejectVariableMeasure(vm); !errors.Is(err, ErrVariableMeasure) {
 		t.Errorf("RejectVariableMeasure(indicator 9) = %v, want ErrVariableMeasure", err)
 	}
-	for _, in := range []string{"03041090004827", "13041090004824", "83041090004829", "4006381333931"} {
-		g, err := gs1.ParseGTIN(in)
+	for _, in := range []string{"03041090004827", "13041090004824", "83041090004823", "4006381333931"} {
+		g, err := ParseGTIN(in)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if g.IsVariableMeasure() {
 			t.Errorf("%s: IsVariableMeasure() = true", in)
 		}
-		if err := gs1.RejectVariableMeasure(g); err != nil {
+		if err := RejectVariableMeasure(g); err != nil {
 			t.Errorf("%s: RejectVariableMeasure() = %v, want nil", in, err)
 		}
 	}
 	// A GTIN-13 starting with 9 (an ISBN-like prefix) pads to indicator 0: it is NOT variable measure.
-	g13, err := gs1.ParseGTIN("9780306406157")
+	g13, err := ParseGTIN("9780306406157")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +155,7 @@ func TestNewGTINComputesCheckDigit(t *testing.T) {
 		{"03600029145", "00036000291452"},
 	}
 	for _, tc := range tests {
-		g, err := gs1.NewGTIN(tc.payload)
+		g, err := NewGTIN(tc.payload)
 		if err != nil {
 			t.Fatalf("NewGTIN(%q) error = %v", tc.payload, err)
 		}
@@ -166,7 +164,7 @@ func TestNewGTINComputesCheckDigit(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"", "123456", "12345678901234", "A304109000482", "0000000"} {
-		if _, err := gs1.NewGTIN(bad); !errors.Is(err, gs1.ErrInvalidGTIN) {
+		if _, err := NewGTIN(bad); !errors.Is(err, ErrInvalidGTIN) {
 			t.Errorf("NewGTIN(%q) error = %v, want ErrInvalidGTIN", bad, err)
 		}
 	}
@@ -175,11 +173,11 @@ func TestNewGTINComputesCheckDigit(t *testing.T) {
 // The worked case/each relation from the GS1 General Specifications: a case GTIN-14 wraps the
 // each GTIN's 13 digit body behind an indicator digit and carries its own check digit.
 func TestCaseGTINWrapsEachGTIN(t *testing.T) {
-	each, err := gs1.ParseGTIN("03041090004827")
+	each, err := ParseGTIN("03041090004827")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs, err := gs1.ParseGTIN("13041090004824")
+	cs, err := ParseGTIN("13041090004824")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,5 +189,18 @@ func TestCaseGTINWrapsEachGTIN(t *testing.T) {
 	}
 	if cs.IndicatorDigit() != 1 || each.IndicatorDigit() != 0 {
 		t.Errorf("indicators = (%d,%d), want (1,0)", cs.IndicatorDigit(), each.IndicatorDigit())
+	}
+}
+
+func TestZeroGTINDigitAccessors(t *testing.T) {
+	var g GTIN
+	if g.IndicatorDigit() != -1 || g.CheckDigit() != -1 {
+		t.Errorf("zero GTIN digits = (%d,%d), want (-1,-1)", g.IndicatorDigit(), g.CheckDigit())
+	}
+	if g.IsVariableMeasure() {
+		t.Error("zero GTIN is not variable measure")
+	}
+	if err := RejectVariableMeasure(g); err != nil {
+		t.Errorf("RejectVariableMeasure(zero) = %v", err)
 	}
 }

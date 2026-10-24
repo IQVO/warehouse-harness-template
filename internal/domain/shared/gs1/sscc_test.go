@@ -1,10 +1,8 @@
-package gs1_test
+package gs1
 
 import (
 	"errors"
 	"testing"
-
-	"github.com/claudioed/warehouse-harness-template/internal/domain/shared/gs1"
 )
 
 func TestParseSSCC(t *testing.T) {
@@ -21,7 +19,7 @@ func TestParseSSCC(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
-			s, err := gs1.ParseSSCC(tc.in)
+			s, err := ParseSSCC(tc.in)
 			if err != nil {
 				t.Fatalf("ParseSSCC(%q) error = %v", tc.in, err)
 			}
@@ -55,8 +53,8 @@ func TestParseSSCCRejects(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := gs1.ParseSSCC(tc.in)
-			if !errors.Is(err, gs1.ErrInvalidSSCC) {
+			s, err := ParseSSCC(tc.in)
+			if !errors.Is(err, ErrInvalidSSCC) {
 				t.Fatalf("ParseSSCC(%q) error = %v, want ErrInvalidSSCC", tc.in, err)
 			}
 			if !s.IsZero() {
@@ -67,7 +65,7 @@ func TestParseSSCCRejects(t *testing.T) {
 }
 
 func TestNewSSCCComputesCheckDigit(t *testing.T) {
-	s, err := gs1.NewSSCC("37610425002123456")
+	s, err := NewSSCC("37610425002123456")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,15 +73,22 @@ func TestNewSSCCComputesCheckDigit(t *testing.T) {
 		t.Errorf("NewSSCC = %q, want 376104250021234569", s)
 	}
 	for _, bad := range []string{"", "3761042500212345", "376104250021234567", "3761042500212345A"} {
-		if _, err := gs1.NewSSCC(bad); !errors.Is(err, gs1.ErrInvalidSSCC) {
+		if _, err := NewSSCC(bad); !errors.Is(err, ErrInvalidSSCC) {
 			t.Errorf("NewSSCC(%q) error = %v, want ErrInvalidSSCC", bad, err)
 		}
 	}
 }
 
 func TestZeroSSCC(t *testing.T) {
-	var s gs1.SSCC
+	var s SSCC
 	if !s.IsZero() || s.String() != "" {
 		t.Errorf("zero SSCC: IsZero=%v String=%q", s.IsZero(), s.String())
+	}
+}
+
+func TestZeroSSCCDigitAccessors(t *testing.T) {
+	var s SSCC
+	if s.ExtensionDigit() != -1 || s.CheckDigit() != -1 {
+		t.Errorf("zero SSCC digits = (%d,%d), want (-1,-1)", s.ExtensionDigit(), s.CheckDigit())
 	}
 }
