@@ -25,6 +25,8 @@ jobs:
         run: python3 scripts/harness/test_hook.py
       - name: Config sensors (repo_lint) tests
         run: python3 scripts/harness/test_repo_lint.py
+      - name: Fleet drift (namespace-aware canonical sets) tests
+        run: python3 scripts/harness/test_fleet_drift.py
       - name: GS1 package distribution (opt-in managed copy, drift list)
         run: python3 tools/test_migrate_gs1.py
       - name: GS1 package is green on its own (tests, byte-identity digest)
