@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_REPOS = [
+    # warehouse fleet
     "inventory-storage",
     "order-management",
     "wes-work-planning",
@@ -44,6 +45,23 @@ DEFAULT_REPOS = [
     "warehouse-ops-agent",
     "network-fulfillment",
     "warehouse-planning",
+    "slotting-optimization",
+    "pick-face-replenishment",
+    "product-master",
+    "inbound-receiving",
+    "returns-processing",
+    "exception-management",
+    # retail network
+    "node-topology",
+    "offer-availability",
+    "delivery-promise",
+    "customer-ordering",
+    "order-sourcing",
+    "vendor-connectivity",
+    "linehaul-transportation",
+    "last-mile-delivery",
+    "shipping-and-tracking",
+    "node-performance",
 ]
 
 CATEGORY_MAINTAINABILITY = "maintainability"

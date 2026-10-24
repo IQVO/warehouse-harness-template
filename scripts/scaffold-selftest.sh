@@ -10,8 +10,9 @@
 #   4. TestNoGoFilesAtRepoRoot goes red on a .go file at the root and green once it is gone;
 #   5. a cmd/ directory with no binary is an error, not a silent pass.
 #
-# Offline: it uses the two-argument form of new-service.sh (no CloudEvents helper, so no
-# `go get`). Run from the template root:  bash scripts/scaffold-selftest.sh
+# Offline: it uses the two-argument form of new-service.sh for the sensor cases
+# (no CloudEvents helper, so no `go get`) and only greps the generated helper in
+# the namespace cases. Run from the template root:  bash scripts/scaffold-selftest.sh
 set -euo pipefail
 
 template_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,7 +70,7 @@ cat >cmd/api/main.go <<'EOF'
 package main
 
 import (
-	_ "github.com/claudioed/selftest-svc/internal/adapters/outbound/memory"
+	_ "github.com/IQVO/selftest-svc/internal/adapters/outbound/memory"
 )
 
 func main() {}
@@ -81,7 +82,7 @@ cat >cmd/api/main.go <<'EOF'
 package main
 
 import (
-	_ "github.com/claudioed/selftest-svc/internal/adapters/outbound/postgres"
+	_ "github.com/IQVO/selftest-svc/internal/adapters/outbound/postgres"
 )
 
 func main() {}
@@ -114,5 +115,53 @@ mkdir -p "$gs1_dest"
 diff -r "$template_root/internal/domain/shared/gs1" "$gs1_dest/internal/domain/shared/gs1" >/dev/null \
   || fail "the scaffolded gs1 package differs from the template's"
 
+step "warehouse namespace (default): the CloudEvents helper keeps the warehouse prefixes"
+wh_dest="$work/selftest-wh"
+mkdir -p "$wh_dest"
+(cd "$template_root" && tar --exclude=.git -cf - .) | (cd "$wh_dest" && tar -xf -)
+(cd "$wh_dest" && bash scripts/new-service.sh selftest-wh stock wms inventory-storage >"$work/new-service-wh.log" 2>&1) \
+  || { cat "$work/new-service-wh.log"; fail "new-service.sh with the warehouse namespace failed"; }
+wh_ce="$wh_dest/internal/adapters/kafka/cloudevents/cloudevents.go"
+[[ -f "$wh_ce" ]] || fail "warehouse scaffold: no cloudevents.go generated"
+grep -q 'com\.warehouse\.' "$wh_ce" || fail "warehouse scaffold: type prefix is not com.warehouse."
+grep -q '"/warehouse/" + Repo' "$wh_ce" || fail "warehouse scaffold: Source is not /warehouse/<repo>"
+grep -q 'urn:warehouse:' "$wh_ce" || fail "warehouse scaffold: dataschema is not urn:warehouse:"
+grep -q 'Subdomain = "wms"' "$wh_ce" || fail "warehouse scaffold: the constant is not Subdomain"
+if grep -rn '{{' "$wh_dest/internal/adapters/kafka/cloudevents/"; then
+  fail "warehouse scaffold: a placeholder is left in the CloudEvents helper"
+fi
+
+step "retailnetwork namespace: the CloudEvents helper uses the network prefixes"
+rn_dest="$work/selftest-rn"
+mkdir -p "$rn_dest"
+(cd "$template_root" && tar --exclude=.git -cf - .) | (cd "$rn_dest" && tar -xf -)
+(cd "$rn_dest" && bash scripts/new-service.sh selftest-rn order storefront checkout retailnetwork >"$work/new-service-rn.log" 2>&1) \
+  || { cat "$work/new-service-rn.log"; fail "new-service.sh with the retailnetwork namespace failed"; }
+rn_ce_dir="$rn_dest/internal/adapters/kafka/cloudevents"
+rn_ce="$rn_ce_dir/cloudevents.go"
+[[ -f "$rn_ce" ]] || fail "retailnetwork scaffold: no cloudevents.go generated"
+grep -q 'com.retailnetwork.storefront.' "$rn_ce" || fail "retailnetwork scaffold: type prefix is not com.retailnetwork.storefront."
+grep -q '/retailnetwork/' "$rn_ce" || fail "retailnetwork scaffold: Source is not /retailnetwork/<context>"
+grep -q 'Source  = "/retailnetwork/" + Context' "$rn_ce" || fail "retailnetwork scaffold: Source must key on Context, not Repo"
+grep -q 'urn:retailnetwork:' "$rn_ce" || fail "retailnetwork scaffold: dataschema is not urn:retailnetwork:"
+grep -q 'Tier = "storefront"' "$rn_ce" || fail "retailnetwork scaffold: the constant is not Tier"
+if grep -q 'com.warehouse' "$rn_ce" "$rn_ce_dir/cloudevents_test.go"; then
+  fail "retailnetwork scaffold still mentions com.warehouse"
+fi
+if grep -rn '{{' "$rn_ce_dir"; then
+  fail "retailnetwork scaffold: a placeholder is left in the CloudEvents helper"
+fi
+
+step "retailnetwork namespace: an invalid tier is rejected with a clear error"
+bad_dest="$work/selftest-rn-bad"
+mkdir -p "$bad_dest"
+(cd "$template_root" && tar --exclude=.git -cf - .) | (cd "$bad_dest" && tar -xf -)
+if (cd "$bad_dest" && bash scripts/new-service.sh selftest-rn-bad order bogus checkout retailnetwork >"$work/new-service-rn-bad.log" 2>&1); then
+  fail "new-service.sh accepted 'bogus' as a retailnetwork tier"
+fi
+grep -q 'commerce|logistics|partner|storefront' "$work/new-service-rn-bad.log" \
+  || { cat "$work/new-service-rn-bad.log"; fail "the invalid-tier rejection does not name the valid tiers"; }
+[[ ! -e "$bad_dest/internal/adapters/kafka/cloudevents" ]] || fail "a rejected tier still generated the CloudEvents helper"
+
 echo
-echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green)"
+echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green, both CloudEvents namespaces)"

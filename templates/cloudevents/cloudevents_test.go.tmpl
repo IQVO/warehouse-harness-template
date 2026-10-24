@@ -43,11 +43,11 @@ func TestNewProducesStructuredCloudEvent(t *testing.T) {
 		"specversion":     "1.0",
 		"id":              "6f1c2b7e-4c3a-4a1d-9f0b-6c2b8a7d1e33",
 		"source":          Source,
-		"type":            "com.warehouse." + Subdomain + "." + Context + ".sample.SampleHappened",
+		"type":            "com.{{EVENT_NAMESPACE}}." + {{SUBDOMAIN_CONST_NAME}} + "." + Context + ".sample.SampleHappened",
 		"subject":         "agg-1",
 		"time":            "2026-09-30T15:00:00Z",
 		"datacontenttype": "application/json",
-		"dataschema":      "urn:warehouse:" + Repo + ":events:SampleHappened:v1",
+		"dataschema":      "urn:{{EVENT_NAMESPACE}}:" + {{DATASCHEMA_SEGMENT}} + ":events:SampleHappened:v1",
 	}
 	for k, v := range want {
 		if got[k] != v {

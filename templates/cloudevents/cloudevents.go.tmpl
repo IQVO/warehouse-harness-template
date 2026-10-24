@@ -8,6 +8,7 @@
 // templates/cloudevents/cloudevents.go.tmpl (the fleet reference
 // implementation). scripts/new-service.sh fills the three per-repo
 // placeholders; change nothing else without an ADR.
+// {{NAMESPACE_SUMMARY}}
 package cloudevents
 
 import (
@@ -23,11 +24,11 @@ import (
 const (
 	// Per repo.
 	Repo = "{{SERVICE_REPO}}"
-	// Subdomain is wms or wes (see the fleet Event Standard's subdomain table).
-	Subdomain = "{{EVENT_SUBDOMAIN}}"
+	// {{SUBDOMAIN_COMMENT}}
+	{{SUBDOMAIN_CONST_NAME}} = "{{EVENT_SUBDOMAIN}}"
 	// Context is the bounded-context segment of `type`.
 	Context = "{{EVENT_CONTEXT}}"
-	Source  = "/warehouse/" + Repo
+	Source  = "/{{EVENT_NAMESPACE}}/" + {{SOURCE_SEGMENT}}
 
 	SpecVersion     = ce.CloudEventsVersionV1 // "1.0"
 	DataContentType = "application/json"
@@ -42,14 +43,14 @@ const (
 // It is deterministic: consumers DLQ/skip it, never retry it.
 var ErrNotCloudEvent = errors.New("cloudevents: message is not a valid CloudEvents 1.0 event")
 
-// Type builds com.warehouse.<subdomain>.<context>.<entity>.<EventName>.
+// Type builds com.{{EVENT_NAMESPACE}}.<{{TYPE_SEGMENT_DOC}}>.<context>.<entity>.<EventName>.
 func Type(entity, eventName string) string {
-	return fmt.Sprintf("com.warehouse.%s.%s.%s.%s", Subdomain, Context, entity, eventName)
+	return fmt.Sprintf("com.{{EVENT_NAMESPACE}}.%s.%s.%s.%s", {{SUBDOMAIN_CONST_NAME}}, Context, entity, eventName)
 }
 
-// DataSchema builds urn:warehouse:<repo>:<stream>:<EventName>:v<version>.
+// DataSchema builds urn:{{EVENT_NAMESPACE}}:<{{DATASCHEMA_SEGMENT_DOC}}>:<stream>:<EventName>:v<version>.
 func DataSchema(stream, eventName string, version int) string {
-	return fmt.Sprintf("urn:warehouse:%s:%s:%s:v%d", Repo, stream, eventName, version)
+	return fmt.Sprintf("urn:{{EVENT_NAMESPACE}}:%s:%s:%s:v%d", {{DATASCHEMA_SEGMENT}}, stream, eventName, version)
 }
 
 // Spec describes one event occurrence to encode.
