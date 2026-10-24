@@ -131,6 +131,7 @@ case "${EVENT_NAMESPACE}" in
     esac
     SUBDOMAIN_CONST_NAME="Tier"
     SUBDOMAIN_COMMENT="Tier is the retail-network business-area segment: commerce, logistics, partner or storefront."
+    NAMESPACE_SUMMARY="Event types are com.${EVENT_NAMESPACE}.${EVENT_SUBDOMAIN}.${EVENT_CONTEXT}.<entity>.<EventName>, source /${EVENT_NAMESPACE}/${EVENT_CONTEXT}, dataschema urn:${EVENT_NAMESPACE}:${EVENT_CONTEXT}:<stream>:<EventName>:v<version>."
     SOURCE_SEGMENT="Context"
     DATASCHEMA_SEGMENT="Context"
     TYPE_SEGMENT_DOC="tier"
@@ -176,6 +177,13 @@ fi
 if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
   ce_dir="internal/adapters/kafka/cloudevents"
   mkdir -p "${ce_dir}"
+  # {{NAMESPACE_SUMMARY}} documents the full type/source/dataschema prefixes in
+  # the generated helper; the warehouse namespace has no such line (its output
+  # stays byte-identical to the pre-namespace template), so it is deleted there.
+  namespace_sed=(-e "s|{{NAMESPACE_SUMMARY}}|${NAMESPACE_SUMMARY:-}|g")
+  if [[ "${EVENT_NAMESPACE}" == "warehouse" ]]; then
+    namespace_sed=(-e "/{{NAMESPACE_SUMMARY}}/d")
+  fi
   for f in cloudevents.go cloudevents_test.go; do
     sed \
       -e "s|{{SERVICE_REPO}}|${SERVICE_REPO}|g" \
@@ -188,6 +196,7 @@ if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
       -e "s|{{DATASCHEMA_SEGMENT}}|${DATASCHEMA_SEGMENT}|g" \
       -e "s|{{TYPE_SEGMENT_DOC}}|${TYPE_SEGMENT_DOC}|g" \
       -e "s|{{DATASCHEMA_SEGMENT_DOC}}|${DATASCHEMA_SEGMENT_DOC}|g" \
+      "${namespace_sed[@]}" \
       "templates/cloudevents/${f}.tmpl" > "${ce_dir}/${f}"
     echo "  generated ${ce_dir}/${f} (CloudEvents type prefix com.${EVENT_NAMESPACE}.${EVENT_SUBDOMAIN}.${EVENT_CONTEXT})"
   done

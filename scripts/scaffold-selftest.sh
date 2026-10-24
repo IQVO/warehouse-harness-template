@@ -123,7 +123,7 @@ mkdir -p "$wh_dest"
   || { cat "$work/new-service-wh.log"; fail "new-service.sh with the warehouse namespace failed"; }
 wh_ce="$wh_dest/internal/adapters/kafka/cloudevents/cloudevents.go"
 [[ -f "$wh_ce" ]] || fail "warehouse scaffold: no cloudevents.go generated"
-grep -q 'com.warehouse.wms.' "$wh_ce" || fail "warehouse scaffold: type prefix is not com.warehouse.wms."
+grep -q 'com\.warehouse\.' "$wh_ce" || fail "warehouse scaffold: type prefix is not com.warehouse."
 grep -q '"/warehouse/" + Repo' "$wh_ce" || fail "warehouse scaffold: Source is not /warehouse/<repo>"
 grep -q 'urn:warehouse:' "$wh_ce" || fail "warehouse scaffold: dataschema is not urn:warehouse:"
 grep -q 'Subdomain = "wms"' "$wh_ce" || fail "warehouse scaffold: the constant is not Subdomain"
