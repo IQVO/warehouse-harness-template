@@ -46,6 +46,9 @@ step "scripts/new-service.sh selftest-svc stock"
 bash scripts/new-service.sh selftest stock >"$work/new-service.log" 2>&1 || { cat "$work/new-service.log"; fail "new-service.sh failed"; }
 grep -E 'generated|kept|substituted' "$work/new-service.log"
 
+[[ ! -e internal/domain/shared/gs1 ]] || fail "a default scaffold must not carry internal/domain/shared/gs1"
+[[ ! -e internal/domain ]] || fail "dropping gs1 must leave no empty internal/domain behind"
+
 for f in Dockerfile .dockerignore docs/before-first-release.md; do
   [[ -f "$f" ]] || fail "new-service.sh did not generate $f"
 done
@@ -98,6 +101,18 @@ step "sensor 2 green: the file moved into features/"
 mkdir -p features
 mv features_test.go features/features_test.go
 expect_green '^TestNoGoFilesAtRepoRoot$'
+
+step "WITH_GS1=1 keeps the GS1 package, and it builds, tests and stays byte-identical in the scaffold"
+gs1_dest="$work/selftest-gs1"
+mkdir -p "$gs1_dest"
+(cd "$template_root" && tar --exclude=.git -cf - .) | (cd "$gs1_dest" && tar -xf -)
+(cd "$gs1_dest" && WITH_GS1=1 bash scripts/new-service.sh selftest-gs1 stock >"$work/new-service-gs1.log" 2>&1) \
+  || { cat "$work/new-service-gs1.log"; fail "new-service.sh with WITH_GS1=1 failed"; }
+[[ -d "$gs1_dest/internal/domain/shared/gs1" ]] || fail "WITH_GS1=1 did not keep the gs1 package"
+(cd "$gs1_dest" && go vet ./internal/domain/... && go test ./internal/domain/... -count=1) \
+  || fail "the gs1 package does not build/test inside a scaffold"
+diff -r "$template_root/internal/domain/shared/gs1" "$gs1_dest/internal/domain/shared/gs1" >/dev/null \
+  || fail "the scaffolded gs1 package differs from the template's"
 
 echo
 echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green)"

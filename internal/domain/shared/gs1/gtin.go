@@ -1,6 +1,9 @@
 package gs1
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 const gtinLength = 14
 
@@ -40,7 +43,7 @@ func NewGTIN(payload string) (GTIN, error) {
 	if err != nil {
 		return GTIN{}, invalidGTIN("only ASCII digits are allowed")
 	}
-	return ParseGTIN(payload + string(rune('0'+cd)))
+	return ParseGTIN(payload + strconv.Itoa(cd))
 }
 
 // String is the 14-digit form, or "" for the zero value.

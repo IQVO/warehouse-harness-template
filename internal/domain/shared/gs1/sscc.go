@@ -1,5 +1,7 @@
 package gs1
 
+import "strconv"
+
 const ssccLength = 18
 
 // SSCC is a Serial Shipping Container Code (AI 00): extension digit, 16 digits of company
@@ -29,7 +31,7 @@ func NewSSCC(payload string) (SSCC, error) {
 	if err != nil {
 		return SSCC{}, invalidSSCC("only ASCII digits are allowed")
 	}
-	return ParseSSCC(payload + string(rune('0'+cd)))
+	return ParseSSCC(payload + strconv.Itoa(cd))
 }
 
 // String is the 18-digit form, or "" for the zero value.

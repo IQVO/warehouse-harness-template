@@ -63,6 +63,13 @@
 #      Helm chart and its chart tests are yours to write from the closest
 #      sibling (IQVO/pick-face-replenishment, IQVO/task-interleaving).
 #
+# GS1 identification package (internal/domain/shared/gs1: GTIN, SSCC, mod-10, scan parser):
+# shared domain code for contexts that identify products or cartons. It is NOT part of a default
+# scaffold (dead code in most services); keep it with
+#   WITH_GS1=1 bash scripts/new-service.sh <args>
+# An existing service adopts it with `python3 tools/migrate_v3.py --repo <svc> --with-gs1`. Either
+# way the copy is byte-identical to the template's and is never edited in the service.
+#
 # Two sensors ship in internal/architecture/ and bite from the first commit:
 #   - TestRuntimeBinaryHasNoInMemoryAdapters: cmd/** never imports
 #     internal/adapters/outbound/memory (test doubles only; the fleet runs on
@@ -104,6 +111,17 @@ echo
 if [[ -f .github/workflows/ci.yml.template ]]; then
   mv .github/workflows/ci.yml.template .github/workflows/ci.yml
   echo "  activated .github/workflows/ci.yml (was ci.yml.template)"
+fi
+
+# GS1 package: only on request (see the header comment). The template ships it so that its own
+# `make check` covers it; a scaffold drops it unless WITH_GS1=1.
+gs1_dir="internal/domain/shared/gs1"
+if [[ "${WITH_GS1:-0}" == "1" ]]; then
+  echo "  kept ${gs1_dir} (WITH_GS1=1; byte-identical to the template, do not edit)"
+elif [[ -d "${gs1_dir}" ]]; then
+  rm -r "${gs1_dir}"
+  rmdir internal/domain/shared internal/domain 2>/dev/null || true
+  echo "  dropped ${gs1_dir} (WITH_GS1=1 keeps it)"
 fi
 
 # CloudEvents 1.0 helper (fleet-mandatory envelope). Generated only for a

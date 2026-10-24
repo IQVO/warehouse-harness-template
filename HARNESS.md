@@ -230,6 +230,28 @@ not generated: it depends on what the service runs, so copy the closest
 sibling's. See `scripts/new-service.sh`'s own header comment for
 the full instantiation checklist.
 
+## Shared domain code: the GS1 identification package
+
+`internal/domain/shared/gs1` is the one piece of **domain code** the template carries: the GTIN and
+SSCC value objects (8/12/13/14-digit GTIN normalised to 14 digits, mod-10 check digit, indicator
+digit, variable-measure refusal, 18-digit SSCC), `Mod10CheckDigit`, and `ParseScan` for what a
+scanner returns (`]E0` EAN/UPC, `]I1` ITF-14, `]C1` GS1-128 with AIs 00, 01, 02, 10, 17, 37 and the
+GS/FNC1 separator; AI 01 and AI 02 never together, AI 02 needs AI 00 and AI 37). Standard library
+only, no I/O, so validation is identical in every service without a runtime dependency.
+
+How it reaches a service and stays identical:
+
+| Step | Mechanism |
+|---|---|
+| Template gate | Lives in the template tree, so `make check` / the `selftest` workflow build, lint and test it (100% line coverage and mutation efficacy; `FuzzParseScan` asserts the parser never panics). |
+| New service | NOT in a default scaffold. `WITH_GS1=1 bash scripts/new-service.sh ...` keeps it; otherwise `new-service.sh` removes it. `scaffold-selftest.sh` proves both. |
+| Existing service | `python3 tools/migrate_v3.py --repo <svc> --with-gs1` installs it. Without the flag the tool only **refreshes** a copy that already exists (so the weekly sync never pushes it into a repo that did not ask for it). The file list is `GS1_PACKAGE` in `tools/migrate_v3.py`. |
+| Drift | `scripts/harness-health.py` reads `GS1_PACKAGE` and flags a service copy that differs from the template (a repo without the package is not drift). Inside a service, `TestPackageIsByteIdenticalToTemplate` pins a digest of every file in the package. `tools/test_migrate_gs1.py` fails if a `.go` file is added to the package without being listed. |
+| Changing it | Edit the template, run the gs1 tests, paste the digest the checksum test prints into `sourceDigest`, then re-sync consumers. Never edit a service's copy. |
+
+Tests in the package are in-package (`package gs1`, no import of the module path) precisely so the
+copy compiles unchanged in any module.
+
 ## Agent runtime harness (v3): one logic, three runtimes
 
 v3 makes the guides LOAD and puts sensors INSIDE the agent loop, for Claude Code, OpenCode and Codex.

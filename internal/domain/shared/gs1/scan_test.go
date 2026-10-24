@@ -259,6 +259,20 @@ func FuzzParseScan(f *testing.F) {
 
 func assertScanInvariants(t *testing.T, s Scan) {
 	t.Helper()
+	assertScanCombination(t, s)
+	assertScanElementBounds(t, s)
+	for _, g := range []GTIN{s.GTIN, s.ContentGTIN} {
+		if !g.IsZero() && (len(g.String()) != 14 || !ValidMod10(g.String())) {
+			t.Fatalf("invalid GTIN accepted: %q", g)
+		}
+	}
+	if !s.SSCC.IsZero() && (len(s.SSCC.String()) != 18 || !ValidMod10(s.SSCC.String())) {
+		t.Fatalf("invalid SSCC accepted: %q", s.SSCC)
+	}
+}
+
+func assertScanCombination(t *testing.T, s Scan) {
+	t.Helper()
 	if s.SSCC.IsZero() && s.GTIN.IsZero() && s.ContentGTIN.IsZero() {
 		t.Fatalf("a successful scan identifies nothing: %+v", s)
 	}
@@ -268,19 +282,15 @@ func assertScanInvariants(t *testing.T, s Scan) {
 	if !s.ContentGTIN.IsZero() && (s.SSCC.IsZero() || s.Count < 1) {
 		t.Fatalf("AI 02 without AI 00 and AI 37: %+v", s)
 	}
+}
+
+func assertScanElementBounds(t *testing.T, s Scan) {
+	t.Helper()
 	if s.Count < 0 || s.Count > 99999999 {
 		t.Fatalf("count out of range: %d", s.Count)
 	}
 	if len(s.Lot) > 20 {
 		t.Fatalf("lot longer than 20: %q", s.Lot)
-	}
-	for _, g := range []GTIN{s.GTIN, s.ContentGTIN} {
-		if !g.IsZero() && (len(g.String()) != 14 || !ValidMod10(g.String())) {
-			t.Fatalf("invalid GTIN accepted: %q", g)
-		}
-	}
-	if !s.SSCC.IsZero() && (len(s.SSCC.String()) != 18 || !ValidMod10(s.SSCC.String())) {
-		t.Fatalf("invalid SSCC accepted: %q", s.SSCC)
 	}
 }
 
