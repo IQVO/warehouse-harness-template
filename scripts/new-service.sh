@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg> [<event-subdomain> <event-context>]
+# scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg> [<event-subdomain> <event-context> [<event-namespace>]]
 #
 # Instantiates warehouse-harness-template into the CURRENT working
 # directory (run this FROM the new repo's checkout, with this template
 # repo cloned somewhere else so you can reference/copy from it -- this
 # script assumes it is itself being run from a COPY of this template's
 # files already placed into the new repo, e.g. via
-#   git clone https://github.com/claudioed/warehouse-harness-template <new-repo>
+#   git clone https://github.com/IQVO/warehouse-harness-template <new-repo>
 #   cd <new-repo> && rm -rf .git && git init
 #   bash scripts/new-service.sh inventory stock
 #
@@ -14,19 +14,32 @@
 #   {{SERVICE}}            -> <service-name>          (Postgres user/db, image build tag stem)
 #   {{SERVICE_REPO}}        -> current directory's basename (the actual repo/GitHub name)
 #   {{RICHEST_AGGREGATE}}   -> <richest-domain-aggregate-pkg>
-#   {{EVENT_SUBDOMAIN}}     -> <event-subdomain>  (wms | wes; optional)
+#   {{EVENT_SUBDOMAIN}}     -> <event-subdomain>  (warehouse: wms | wes;
+#                              retailnetwork: the TIER, one of
+#                              commerce | logistics | partner | storefront)
 #   {{EVENT_CONTEXT}}       -> <event-context>    (bounded-context segment of
-#                              the CloudEvents `type`; optional)
+#                              the CloudEvents `type`)
+#   {{EVENT_NAMESPACE}}     -> <event-namespace>  (warehouse | retailnetwork;
+#                              defaults to warehouse when omitted)
 #
 # CloudEvents (fleet-mandatory, see .claude/rules/integration-events.md):
 # when <event-subdomain> and <event-context> are given, the service is
 # Kafka-capable and the script generates
 # internal/adapters/kafka/cloudevents/{cloudevents.go,cloudevents_test.go}
 # from templates/cloudevents/*.tmpl -- the ONLY envelope helper a Kafka
-# publisher/consumer may use. Then run:
+# publisher/consumer may use. Two namespaces exist:
+#   warehouse      (default): type com.warehouse.<subdomain>.<context>...,
+#                  Source "/warehouse/" + Repo, dataschema urn:warehouse:<repo>:...
+#                  e.g. bash scripts/new-service.sh inventory stock wms inventory-storage
+#   retailnetwork: type com.retailnetwork.<tier>.<context>..., Source
+#                  "/retailnetwork/" + Context, dataschema
+#                  urn:retailnetwork:<context>:... (the network uses the
+#                  CONTEXT in source and urn, the warehouse fleet the REPO)
+#                  e.g. bash scripts/new-service.sh customer-ordering order commerce customer-ordering retailnetwork
+# Then run:
 #   go get github.com/cloudevents/sdk-go/v2@latest github.com/segmentio/kafka-go
 #   go test ./internal/adapters/kafka/cloudevents/...
-# Omit both args for a service with no Kafka I/O (and delete
+# Omit both event args for a service with no Kafka I/O (and delete
 # .claude/rules/integration-events.md). There is NO envelope toggle to
 # configure, ever.
 #
@@ -41,7 +54,7 @@
 #     until you replace them, which is the point (better a loud failure
 #     than a silently-accepted 0% threshold).
 #   - go.mod's module path / real dependency versions -- run `go mod init
-#     github.com/claudioed/<repo>` yourself, then `go get` the pinned
+#     github.com/IQVO/<repo>` yourself, then `go get` the pinned
 #     versions HARNESS.md references (arch-go, testcontainers, gremlins).
 #
 # After running this script:
@@ -49,12 +62,12 @@
 #      two documented above ({{MEASURED_*}} in .gremlins.yaml).
 #   2. Fill in .claude/rules/*.md for real once the domain exists.
 #   3. Write real domain/application/adapters code, then:
-#        go mod init github.com/claudioed/<repo>
+#        go mod init github.com/IQVO/<repo>
 #        go get github.com/arch-go/arch-go@v1.7.0
 #        go test ./internal/architecture/... -v   # should PASS trivially on an empty tree
 #   4. make mutation-full, read the measured efficacy/mutant-coverage,
 #      set .gremlins.yaml's thresholds strictly BELOW those numbers.
-#   5. Record "harness-template: v2" in this repo's AGENTS.md, and (Kafka
+#   5. Record "harness-template: v4" in this repo's AGENTS.md, and (Kafka
 #      services) the "Events: CloudEvents 1.0 is MANDATORY" section from
 #      .claude/rules/integration-events.md in its CLAUDE.md/AGENTS.md.
 #   6. lefthook install
@@ -78,9 +91,10 @@
 #     runner lives in features/.
 set -euo pipefail
 
-if [[ $# -ne 2 && $# -ne 4 ]]; then
-  echo "usage: $0 <service-name> <richest-domain-aggregate-pkg> [<event-subdomain> <event-context>]" >&2
-  echo "  example: $0 inventory stock wms inventory-storage" >&2
+if [[ $# -ne 2 && $# -ne 4 && $# -ne 5 ]]; then
+  echo "usage: $0 <service-name> <richest-domain-aggregate-pkg> [<event-subdomain> <event-context> [<event-namespace>]]" >&2
+  echo "  example (warehouse fleet): $0 inventory stock wms inventory-storage" >&2
+  echo "  example (retail network):  $0 customer-ordering order commerce customer-ordering retailnetwork" >&2
   exit 1
 fi
 
@@ -88,12 +102,45 @@ SERVICE="$1"
 RICHEST_AGGREGATE="$2"
 EVENT_SUBDOMAIN="${3:-}"
 EVENT_CONTEXT="${4:-}"
+EVENT_NAMESPACE="${5:-warehouse}"
 SERVICE_REPO="$(basename "$(pwd)")"
 
-if [[ -n "${EVENT_SUBDOMAIN}" && "${EVENT_SUBDOMAIN}" != "wms" && "${EVENT_SUBDOMAIN}" != "wes" ]]; then
-  echo "error: <event-subdomain> must be wms or wes (fleet Event Standard), got '${EVENT_SUBDOMAIN}'" >&2
-  exit 1
-fi
+# Namespace-specific CloudEvents shape. The warehouse fleet keys source and
+# dataschema on the REPO name; the retail network keys them on the CONTEXT and
+# names its subdomain segment a Tier. Both keep the Repo and Context constants.
+case "${EVENT_NAMESPACE}" in
+  warehouse)
+    if [[ -n "${EVENT_SUBDOMAIN}" && "${EVENT_SUBDOMAIN}" != "wms" && "${EVENT_SUBDOMAIN}" != "wes" ]]; then
+      echo "error: <event-subdomain> must be wms or wes (fleet Event Standard), got '${EVENT_SUBDOMAIN}'" >&2
+      exit 1
+    fi
+    SUBDOMAIN_CONST_NAME="Subdomain"
+    SUBDOMAIN_COMMENT="Subdomain is wms or wes (see the fleet Event Standard's subdomain table)."
+    SOURCE_SEGMENT="Repo"
+    DATASCHEMA_SEGMENT="Repo"
+    TYPE_SEGMENT_DOC="subdomain"
+    DATASCHEMA_SEGMENT_DOC="repo"
+    ;;
+  retailnetwork)
+    case "${EVENT_SUBDOMAIN}" in
+      commerce|logistics|partner|storefront) ;;
+      *)
+        echo "error: with <event-namespace> 'retailnetwork', <event-subdomain> is the network tier and must be one of commerce|logistics|partner|storefront, got '${EVENT_SUBDOMAIN}'" >&2
+        exit 1
+        ;;
+    esac
+    SUBDOMAIN_CONST_NAME="Tier"
+    SUBDOMAIN_COMMENT="Tier is the retail-network business-area segment: commerce, logistics, partner or storefront."
+    SOURCE_SEGMENT="Context"
+    DATASCHEMA_SEGMENT="Context"
+    TYPE_SEGMENT_DOC="tier"
+    DATASCHEMA_SEGMENT_DOC="context"
+    ;;
+  *)
+    echo "error: <event-namespace> must be warehouse or retailnetwork, got '${EVENT_NAMESPACE}'" >&2
+    exit 1
+    ;;
+esac
 
 echo "==> instantiating warehouse-harness-template"
 echo "    SERVICE            = ${SERVICE}"
@@ -131,11 +178,18 @@ if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
   mkdir -p "${ce_dir}"
   for f in cloudevents.go cloudevents_test.go; do
     sed \
-      -e "s/{{SERVICE_REPO}}/${SERVICE_REPO}/g" \
-      -e "s/{{EVENT_SUBDOMAIN}}/${EVENT_SUBDOMAIN}/g" \
-      -e "s/{{EVENT_CONTEXT}}/${EVENT_CONTEXT}/g" \
+      -e "s|{{SERVICE_REPO}}|${SERVICE_REPO}|g" \
+      -e "s|{{EVENT_NAMESPACE}}|${EVENT_NAMESPACE}|g" \
+      -e "s|{{EVENT_SUBDOMAIN}}|${EVENT_SUBDOMAIN}|g" \
+      -e "s|{{EVENT_CONTEXT}}|${EVENT_CONTEXT}|g" \
+      -e "s|{{SUBDOMAIN_CONST_NAME}}|${SUBDOMAIN_CONST_NAME}|g" \
+      -e "s|{{SUBDOMAIN_COMMENT}}|${SUBDOMAIN_COMMENT}|g" \
+      -e "s|{{SOURCE_SEGMENT}}|${SOURCE_SEGMENT}|g" \
+      -e "s|{{DATASCHEMA_SEGMENT}}|${DATASCHEMA_SEGMENT}|g" \
+      -e "s|{{TYPE_SEGMENT_DOC}}|${TYPE_SEGMENT_DOC}|g" \
+      -e "s|{{DATASCHEMA_SEGMENT_DOC}}|${DATASCHEMA_SEGMENT_DOC}|g" \
       "templates/cloudevents/${f}.tmpl" > "${ce_dir}/${f}"
-    echo "  generated ${ce_dir}/${f} (CloudEvents type prefix com.warehouse.${EVENT_SUBDOMAIN}.${EVENT_CONTEXT})"
+    echo "  generated ${ce_dir}/${f} (CloudEvents type prefix com.${EVENT_NAMESPACE}.${EVENT_SUBDOMAIN}.${EVENT_CONTEXT})"
   done
   gofmt -w "${ce_dir}" 2>/dev/null || true
 else

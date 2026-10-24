@@ -1,4 +1,4 @@
-# HARNESS.md — warehouse-harness-template v3
+# HARNESS.md — warehouse-harness-template v4
 
 This file is the canonical description of every sensor and guide in this
 template: what it does, what it costs, and when in the change lifecycle it
@@ -214,13 +214,26 @@ e2e-tests' `dbOpen` helper for the concrete pattern).
 ## Instantiating this template
 
 Run `scripts/new-service.sh <service-name> <richest-aggregate-pkg>
-[<event-subdomain> <event-context>]` from a fresh repo checkout. It
-substitutes every `{{SERVICE}}` / `{{SERVICE_REPO}}` / `{{RICHEST_AGGREGATE}}`
-placeholder, and — for a Kafka service (subdomain `wms`|`wes` + the
-bounded-context segment of its CloudEvents `type`) — generates
-`internal/adapters/kafka/cloudevents/` from `templates/cloudevents/`, and tells you which files still need
-manual content (the `.claude/rules/*.md` skeletons, `.gremlins.yaml`'s
-measured thresholds). It also generates the packaging a first release needs:
+[<event-subdomain> <event-context> [<event-namespace>]]` from a fresh repo
+checkout. It substitutes every `{{SERVICE}}` / `{{SERVICE_REPO}}` /
+`{{RICHEST_AGGREGATE}}` placeholder, and — for a Kafka service — generates
+`internal/adapters/kafka/cloudevents/` from `templates/cloudevents/`, and tells
+you which files still need manual content (the `.claude/rules/*.md` skeletons,
+`.gremlins.yaml`'s measured thresholds). The event namespace selects the
+CloudEvents shape:
+
+- `warehouse` (the default when the 5th argument is omitted): the subdomain is
+  `wms`|`wes`; the helper builds `com.warehouse.<subdomain>.<context>...`,
+  `Source = "/warehouse/" + Repo`, `urn:warehouse:<repo>:...`. Example:
+  `bash scripts/new-service.sh inventory stock wms inventory-storage`
+- `retailnetwork`: the subdomain slot is the network TIER, one of
+  `commerce`|`logistics`|`partner`|`storefront`; the helper builds
+  `com.retailnetwork.<tier>.<context>...`, `Source = "/retailnetwork/" +
+  Context`, `urn:retailnetwork:<context>:...` (the network keys source and urn
+  on the CONTEXT, the warehouse fleet on the REPO name). Example:
+  `bash scripts/new-service.sh customer-ordering order commerce customer-ordering retailnetwork`
+
+It also generates the packaging a first release needs:
 `Dockerfile` and `.dockerignore` (from `templates/packaging/`, build every
 `cmd/*`) and `docs/before-first-release.md`, a checklist that names each
 packaging item (Helm chart named after the repo, chart tests, `DATABASE_URL`
