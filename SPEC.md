@@ -8,7 +8,8 @@ to match the fleet's convention, at your convenience.)
 
 This repo is `harness-template: v2` for the warehouse-systems fleet's Go
 bounded-context services. It is a TEMPLATE, not a runnable service: no
-domain code, no `cmd/`, no `apis/openapi.yaml`.
+domain code of its own (the one exception is the shared, opt-in
+`internal/domain/shared/gs1` package, see HARNESS.md), no `cmd/`, no `apis/openapi.yaml`.
 
 ## What's here
 
@@ -32,6 +33,9 @@ domain code, no `cmd/`, no `apis/openapi.yaml`.
 - `scripts/new-service.sh` — instantiation script. See its header comment.
 - `HARNESS.md` — the manifest: every sensor's purpose/cost/lifecycle
   position, and the real incident behind every fitness test.
+- `internal/domain/shared/gs1/` — GTIN / SSCC value objects, mod-10 and GS1-128 scan parser (stdlib only).
+  Byte-identical in every service that adopts it (`migrate_v3.py --with-gs1`); edit it HERE only, then update
+  `sourceDigest` in `checksum_test.go`. Not part of a default scaffold (`WITH_GS1=1` keeps it).
 - `templates/cloudevents/*.go.tmpl` — the fleet reference CloudEvents 1.0
   helper + tests, generated into Kafka services by `new-service.sh`.
 

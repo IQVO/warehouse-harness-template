@@ -68,11 +68,18 @@ CORE_MANAGED = ["scripts/harness/hook.py", "scripts/harness/guide_lint.py", "scr
 
 
 def managed_list() -> list[str]:
-    """MANAGED file list from the template's own migrate_v3.py (single source of truth)."""
+    """MANAGED + GS1_PACKAGE file lists from the template's own migrate_v3.py (single source of truth).
+
+    GS1_PACKAGE files are opt-in: a repo without them is not drift (they are skipped when absent, since
+    they are not in CORE_MANAGED), but a repo that carries a copy must keep it byte-identical.
+    """
     txt = (HERE.parent / "tools" / "migrate_v3.py").read_text()
-    block = txt[txt.index("MANAGED = ["):]
-    block = block[:block.index("]")]
-    return re.findall(r'"([^"]+)"', block)
+    out: list[str] = []
+    for name in ("MANAGED = [", "GS1_PACKAGE = ["):
+        block = txt[txt.index(name):]
+        block = block[:block.index("]")]
+        out += re.findall(r'"([^"]+)"', block)
+    return out
 
 
 def managed_drift(repo: Path, files: set) -> list[str]:

@@ -54,6 +54,25 @@ MANAGED = [
     "internal/architecture/events_fitness_test.go",  # CloudEvents-only + replay CommitInterval  # archViolation: WHAT/WHY/FIX for arch-test failures
     "internal/architecture/catalogue_fitness_test.go",  # fleet CloudEvents ADR type catalogue == asyncapi contract
 ]
+
+# Opt-in shared domain code: the GS1 identification package (GTIN, SSCC, mod-10, scan parser).
+# Byte-identical copies like MANAGED, but NEVER pushed to a repo that does not already carry it:
+# `migrate_v3.py --with-gs1` adds it to a repo that needs it, and the weekly sync (which runs
+# this tool without the flag) only REFRESHES a copy that already exists. scripts/harness-health.py
+# reads this list for drift. Edit the package here, never in a service.
+GS1_PACKAGE = [
+    "internal/domain/shared/gs1/doc.go",
+    "internal/domain/shared/gs1/errors.go",
+    "internal/domain/shared/gs1/check.go",
+    "internal/domain/shared/gs1/gtin.go",
+    "internal/domain/shared/gs1/sscc.go",
+    "internal/domain/shared/gs1/scan.go",
+    "internal/domain/shared/gs1/check_test.go",
+    "internal/domain/shared/gs1/gtin_test.go",
+    "internal/domain/shared/gs1/sscc_test.go",
+    "internal/domain/shared/gs1/scan_test.go",
+    "internal/domain/shared/gs1/checksum_test.go",
+]
 SYMLINKS = {".agents/skills": "../.claude/skills"}
 
 SKILL_META = {
@@ -114,8 +133,10 @@ def sh(args, cwd, check=True):
 
 
 class Migrator:
-    def __init__(self, repo, template, dry, keep_notes=False, profile="service", fast_deps="", sched=None):
+    def __init__(self, repo, template, dry, keep_notes=False, profile="service", fast_deps="", sched=None,
+                 with_gs1=False):
         self.repo, self.template, self.dry = os.path.abspath(repo), os.path.abspath(template), dry
+        self.with_gs1 = with_gs1
         self.keep_notes = keep_notes
         self.profile, self.fast_deps = profile, fast_deps
         self.sched = sched or []  # ["workflow.yml:job", ...] extra scheduled jobs that get red-issue steps
@@ -227,6 +248,26 @@ class Migrator:
                 if not self.dry:
                     os.makedirs(os.path.dirname(self.p(link)), exist_ok=True)
                     os.symlink(target, self.p(link))
+
+    # 4b --------------------------------------------------------------------
+    def gs1_package(self):
+        """Refresh internal/domain/shared/gs1 where it already exists; add it only with --with-gs1."""
+        if self.profile != "service":
+            return
+        present = any(os.path.isfile(self.p(rel)) for rel in GS1_PACKAGE)
+        if not (present or self.with_gs1):
+            return
+        for rel in GS1_PACKAGE:
+            src = os.path.join(self.template, rel)
+            if not os.path.isfile(src):
+                self.say(f"WARN template lacks {rel}")
+                continue
+            if os.path.isfile(self.p(rel)) and open(src, "rb").read() == open(self.p(rel), "rb").read():
+                continue
+            self.say(f"managed (gs1): {rel}")
+            if not self.dry:
+                os.makedirs(os.path.dirname(self.p(rel)), exist_ok=True)
+                shutil.copyfile(src, self.p(rel))
 
     # 5 ---------------------------------------------------------------------
     def makefile(self):
@@ -481,6 +522,7 @@ class Migrator:
             self.skills()
             scoped = self.rules()
         self.managed()
+        self.gs1_package()
         self.makefile()
         self.ci()
         self.claude_md(scoped)
@@ -494,13 +536,16 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--template", default=DEFAULT_TEMPLATE)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--with-gs1", action="store_true",
+                    help="also install internal/domain/shared/gs1 (default: only refresh an existing copy)")
     ap.add_argument("--keep-notes", action="store_true", help="keep TEMPLATE NOTE comments (template repo itself)")
     ap.add_argument("--profile", choices=["service", "platform"], default="service",
                     help="platform = non-Go repo (infra/e2e/console/ui-kit): no skills/rules rewrite, custom check-fast")
     ap.add_argument("--fast-deps", default="", help="platform profile: make targets that make up check-fast")
     ap.add_argument("--sched", action="append", default=[], help="workflow.yml:job that gets harness:red steps")
     a = ap.parse_args()
-    return Migrator(a.repo, a.template, a.dry_run, a.keep_notes, a.profile, a.fast_deps, a.sched).run()
+    return Migrator(a.repo, a.template, a.dry_run, a.keep_notes, a.profile, a.fast_deps, a.sched,
+                    a.with_gs1).run()
 
 
 if __name__ == "__main__":
