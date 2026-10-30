@@ -41,9 +41,33 @@ A fresh scaffold also ships the runtime-binary and repo-root layout sensors
 `docs/before-first-release.md`: work through that checklist before the first
 release.
 
-## Study project
+## Disclaimer
 
-This repo, like the rest of the `warehouse-systems` fleet, is a personal
-study project exploring Domain-Driven Design, hexagonal architecture, and
-AI-agent harness engineering. It is not production software and carries
-no support guarantee.
+This project is a domain-driven design study. It is not associated with,
+endorsed by or affiliated with any company, and it uses no company's code,
+data, logos or trademarks. All names, figures and examples are illustrative
+or synthetic.
+
+## Documentation
+
+The template's own harness reference is [HARNESS.md](HARNESS.md) (every
+sensor's purpose, cost and lifecycle position). The fleet README standard and
+the other fleet rules this template delivers live in warehouse-docs
+(<https://iqvo.github.io/warehouse-docs/>) under agents/fleet — this repo
+carries their canonical copies under `.claude/rules/fleet/`.
+
+## Local development / quality gate
+
+`make check` runs the template's self-test (the same target new services
+inherit); lefthook runs fmt/lint/vet on pre-commit and the full check on
+pre-push.
+
+## Tests
+
+The template ships the architecture fitness tests and harness sensors a new
+service starts from (see HARNESS.md); CI runs the self-test workflow on every
+PR.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
