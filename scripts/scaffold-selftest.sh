@@ -47,6 +47,9 @@ step "scripts/new-service.sh selftest-svc stock"
 bash scripts/new-service.sh selftest stock >"$work/new-service.log" 2>&1 || { cat "$work/new-service.log"; fail "new-service.sh failed"; }
 grep -E 'generated|kept|substituted' "$work/new-service.log"
 
+[[ ! -e .github/workflows/selftest.yml ]] || fail "a scaffold must not keep the template-only selftest.yml"
+python3 scripts/harness/repo_lint.py >"$work/repo-lint.log" 2>&1 || true   # a fresh scaffold is red by design (no web/, MEASURED_* placeholders)
+if grep -q 'selftest.yml' "$work/repo-lint.log"; then cat "$work/repo-lint.log"; fail "repo_lint flags selftest.yml on a fresh scaffold"; fi
 [[ ! -e internal/domain/shared/gs1 ]] || fail "a default scaffold must not carry internal/domain/shared/gs1"
 [[ ! -e internal/domain ]] || fail "dropping gs1 must leave no empty internal/domain behind"
 

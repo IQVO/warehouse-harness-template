@@ -161,6 +161,14 @@ if [[ -f .github/workflows/ci.yml.template ]]; then
   echo "  activated .github/workflows/ci.yml (was ci.yml.template)"
 fi
 
+# selftest.yml is the TEMPLATE's own gate (hook, harness and scaffold self-tests). A service that
+# keeps it runs template-only jobs and trips repo_lint R5 on its {{PLACEHOLDERS}} comment
+# (inbound-receiving, product-master and slotting-optimization inherited it), so drop it here.
+if [[ -f .github/workflows/selftest.yml ]]; then
+  rm .github/workflows/selftest.yml
+  echo "  removed .github/workflows/selftest.yml (template-only gate)"
+fi
+
 # GS1 package: only on request (see the header comment). The template ships it so that its own
 # `make check` covers it; a scaffold drops it unless WITH_GS1=1.
 gs1_dir="internal/domain/shared/gs1"
