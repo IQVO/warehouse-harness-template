@@ -8,7 +8,9 @@
 #   3. TestRuntimeBinaryHasNoInMemoryAdapters goes red on a cmd/ binary that imports the
 #      memory adapters and green again when the import is replaced by a real adapter;
 #   4. TestNoGoFilesAtRepoRoot goes red on a .go file at the root and green once it is gone;
-#   5. a cmd/ directory with no binary is an error, not a silent pass.
+#   5. a cmd/ directory with no binary is an error, not a silent pass;
+#   6. the agent-authority sensors (MCP tool / A2A skill levels, resource+prompt surface) skip on a
+#      scaffold with no adapter and go red then green on a minimal adapter.
 #
 # Offline: it uses the two-argument form of new-service.sh for the sensor cases
 # (no CloudEvents helper, so no `go get`) and only greps the generated helper in
@@ -106,6 +108,85 @@ mkdir -p features
 mv features_test.go features/features_test.go
 expect_green '^TestNoGoFilesAtRepoRoot$'
 
+step "agent-authority sensors (MCP/A2A) skip on a scaffold that has no adapter"
+agent_tests='^(TestEveryMCPToolDeclaresAuthority|TestMCPWriteToolsAreAtLeastL3|TestA2ASkillsDeclareAuthority|TestMCPServerOffersResourceAndPrompt)$'
+skips="$(arch -run "$agent_tests" -v | grep -c '^--- SKIP' || true)"
+[[ "$skips" == "4" ]] || fail "expected the 4 agent-authority sensors to skip on a scaffold without adapters, saw $skips skips"
+echo "4 skipped"
+
+step "agent-authority sensor red: an MCP tool with no authority, then green once it declares one"
+mkdir -p internal/adapters/inbound/mcp
+printf '\n// requires github.com/modelcontextprotocol/go-sdk (selftest marker)\n' >>go.mod
+cat >internal/adapters/inbound/mcp/tools.go <<'EOF'
+package mcp
+
+import "github.com/modelcontextprotocol/go-sdk/mcp"
+
+const (
+	authorityMetaKey = "com.warehouse/authority"
+	authorityL1      = "L1"
+	authorityL2      = "L2"
+	authorityL3      = "L3"
+)
+
+func authorityMeta(level string) mcp.Meta { return mcp.Meta{authorityMetaKey: level} }
+
+func register(s *mcp.Server) {
+	add(s, &mcp.Tool{Name: "get_thing", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}})
+}
+EOF
+expect_red '^TestEveryMCPToolDeclaresAuthority$' 'has no Meta field'
+sed -i.bak 's|ReadOnlyHint: true}})|ReadOnlyHint: true}, Meta: authorityMeta(authorityL1)})|' internal/adapters/inbound/mcp/tools.go
+rm internal/adapters/inbound/mcp/tools.go.bak
+expect_green '^TestEveryMCPToolDeclaresAuthority$'
+
+step "agent-authority sensor red: a write tool declared L2, then green at L3"
+cat >>internal/adapters/inbound/mcp/tools.go <<'EOF'
+
+func registerWrite(s *mcp.Server) {
+	add(s, &mcp.Tool{Name: "do_thing", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false}, Meta: authorityMeta(authorityL2)})
+}
+EOF
+expect_red '^TestMCPWriteToolsAreAtLeastL3$' 'is declared L2'
+sed -i.bak 's|ReadOnlyHint: false}, Meta: authorityMeta(authorityL2)|ReadOnlyHint: false}, Meta: authorityMeta(authorityL3)|' internal/adapters/inbound/mcp/tools.go
+rm internal/adapters/inbound/mcp/tools.go.bak
+expect_green '^TestMCPWriteToolsAreAtLeastL3$'
+
+step "agent-authority sensor: no resource/prompt is red; the pending marker parks it visibly; real calls make it green"
+expect_red '^TestMCPServerOffersResourceAndPrompt$' 'never calls AddResource'
+printf 'selftest: rollout wave pending\n' >internal/adapters/inbound/mcp/.agent-surface-pending
+arch -run '^TestMCPServerOffersResourceAndPrompt$' -v | grep -F 'agent surface pending: selftest: rollout wave pending' >/dev/null \
+  || fail "the pending marker did not skip with its reason"
+rm internal/adapters/inbound/mcp/.agent-surface-pending
+cat >internal/adapters/inbound/mcp/surface.go <<'EOF'
+package mcp
+
+import "github.com/modelcontextprotocol/go-sdk/mcp"
+
+func surface(s *mcp.Server) {
+	s.AddResourceTemplate(&mcp.ResourceTemplate{}, nil)
+	s.AddPrompt(&mcp.Prompt{}, nil)
+}
+EOF
+expect_green '^TestMCPServerOffersResourceAndPrompt$'
+
+step "agent-authority sensor red: an A2A skill without an authority tag, then green"
+mkdir -p internal/adapters/inbound/a2a
+cat >internal/adapters/inbound/a2a/server.go <<'EOF'
+package a2a
+
+import "github.com/a2aproject/a2a-go/a2a"
+
+func skills() []a2a.AgentSkill {
+	return []a2a.AgentSkill{{ID: "do_thing", Tags: []string{"write"}}}
+}
+EOF
+expect_red '^TestA2ASkillsDeclareAuthority$' 'has no authority:L1..authority:L4 tag'
+sed -i.bak 's|"write"}|"write", "authority:L3"}|' internal/adapters/inbound/a2a/server.go
+rm internal/adapters/inbound/a2a/server.go.bak
+expect_green '^TestA2ASkillsDeclareAuthority$'
+rm -r internal/adapters
+
 step "WITH_GS1=1 keeps the GS1 package, and it builds, tests and stays byte-identical in the scaffold"
 gs1_dest="$work/selftest-gs1"
 mkdir -p "$gs1_dest"
@@ -167,4 +248,4 @@ grep -q 'commerce|logistics|partner|storefront' "$work/new-service-rn-bad.log" \
 [[ ! -e "$bad_dest/internal/adapters/kafka/cloudevents" ]] || fail "a rejected tier still generated the CloudEvents helper"
 
 echo
-echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green, both CloudEvents namespaces)"
+echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green, agent-authority sensors, both CloudEvents namespaces)"

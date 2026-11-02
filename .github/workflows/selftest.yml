@@ -41,6 +41,8 @@ jobs:
         run: |
           go vet ./internal/architecture/
           go test ./internal/architecture/
+      - name: Agent authority sensors (unmanaged copy; skip here, red/green on fixture trees)
+        run: go test ./internal/architecture/ -count=1 -v -run 'TestEveryMCPToolDeclaresAuthority|TestMCPWriteToolsAreAtLeastL3|TestA2ASkillsDeclareAuthority|TestMCPServerOffersResourceAndPrompt|TestMCPAuthoritySensorBites|TestMCPWriteLevelSensorBites|TestA2AAuthoritySensorBites|TestMCPSurfaceSensorBites|TestAgentAdapterSkipRules'
       - name: Scaffold self-test (new-service.sh output; runtime and root-layout sensors red then green)
         run: bash scripts/scaffold-selftest.sh
       - name: Migration tool is idempotent on a fresh Go repo
