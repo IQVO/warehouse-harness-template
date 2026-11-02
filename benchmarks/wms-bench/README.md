@@ -54,3 +54,7 @@ results to compare: a `report.py` that renders the v3-vs-v4 table (today, aggreg
 EVALS.md's rounds did -- the JSONL schema is identical, `harness_eval2.report()` already renders one
 version's table), and more tasks per bounded context (REST endpoint, flaky-test repair) -- add a `tasks/*.yaml`
 file per new task, no runner changes needed.
+
+## Disclaimer
+
+This project is a domain-driven design study. It is not associated with, endorsed by or affiliated with any company, and it uses no company's code, data, logos or trademarks. All names, figures and examples are illustrative or synthetic.
