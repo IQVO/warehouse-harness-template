@@ -82,7 +82,7 @@ const (
 		"define once in the adapter package: `const authorityMetaKey = \"com.warehouse/authority\"`, `const authorityL1 = \"L1\"` (and L2, L3), " +
 		"`func authorityMeta(level string) mcp.Meta { return mcp.Meta{authorityMetaKey: level} }`. " +
 		"Do not loosen this test or add an exception."
-	fixDeclareA2A = "add the tag to the skill: `Tags: []string{\"workforce\", \"read\", \"authority:L1\"}` " +
+	fixDeclareA2A = "add the tag to the skill: `Tags: []string{\"<context>\", \"read\", \"authority:L1\"}` " +
 		"(a write skill keeps its `write` tag and carries `authority:L3`)."
 )
 
@@ -123,18 +123,7 @@ func loadAgentPackages(root string) ([]*agentPkg, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, perr := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
-		if perr != nil {
-			return perr
-		}
-		dir := filepath.Dir(path)
-		p := byDir[dir]
-		if p == nil {
-			p = &agentPkg{dir: dir, fset: fset, pkgBind: map[string][]ast.Expr{}}
-			byDir[dir] = p
-		}
-		p.files = append(p.files, newAgentFile(path, f))
-		return nil
+		return addAgentFile(fset, byDir, path)
 	})
 	if err != nil {
 		return nil, err
@@ -146,18 +135,40 @@ func loadAgentPackages(root string) ([]*agentPkg, error) {
 	sort.Strings(dirs)
 	var out []*agentPkg
 	for _, d := range dirs {
-		p := byDir[d]
-		for _, f := range p.files {
-			for _, decl := range f.file.Decls {
-				if gd, ok := decl.(*ast.GenDecl); ok {
-					addBindings(p.pkgBind, gd)
-				}
-			}
-		}
-		out = append(out, p)
+		byDir[d].bindPackageLevel()
+		out = append(out, byDir[d])
 	}
 	return out, nil
 }
+
+// bindPackageLevel records every package-level const/var binding of the package.
+func (p *agentPkg) bindPackageLevel() {
+	for _, f := range p.files {
+		for _, decl := range f.file.Decls {
+			if gd, ok := decl.(*ast.GenDecl); ok {
+				addBindings(p.pkgBind, gd)
+			}
+		}
+	}
+}
+
+func addAgentFile(fset *token.FileSet, byDir map[string]*agentPkg, path string) error {
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	p := byDir[dir]
+	if p == nil {
+		p = &agentPkg{dir: dir, fset: fset, pkgBind: map[string][]ast.Expr{}}
+		byDir[dir] = p
+	}
+	p.files = append(p.files, newAgentFile(path, f))
+	return nil
+}
+
+// l4Documented reports whether the file carries an //authority:L4 comment that names an ADR.
+func (f *agentFile) l4Documented() bool { return f.l4Found && f.l4ADR }
 
 func newAgentFile(path string, f *ast.File) *agentFile {
 	af := &agentFile{path: path, file: f}
@@ -195,16 +206,21 @@ func addBindings(into map[string][]ast.Expr, n ast.Node) {
 				}
 			}
 		case *ast.AssignStmt:
-			if (x.Tok == token.DEFINE || x.Tok == token.ASSIGN) && len(x.Lhs) == len(x.Rhs) {
-				for i, l := range x.Lhs {
-					if id, ok := l.(*ast.Ident); ok {
-						into[id.Name] = append(into[id.Name], x.Rhs[i])
-					}
-				}
-			}
+			addAssignBindings(into, x)
 		}
 		return true
 	})
+}
+
+func addAssignBindings(into map[string][]ast.Expr, x *ast.AssignStmt) {
+	if (x.Tok != token.DEFINE && x.Tok != token.ASSIGN) || len(x.Lhs) != len(x.Rhs) {
+		return
+	}
+	for i, l := range x.Lhs {
+		if id, ok := l.(*ast.Ident); ok {
+			into[id.Name] = append(into[id.Name], x.Rhs[i])
+		}
+	}
 }
 
 // scope resolves identifiers: bindings of the enclosing function win over the package's.
@@ -301,26 +317,39 @@ func (p *agentPkg) eachLiteral(match func(f *agentFile, x, sel string) bool, vis
 				addBindings(sc.local, fd.Body)
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
-				lit, ok := n.(*ast.CompositeLit)
-				if !ok || lit.Type == nil {
-					return true
-				}
-				if x, sel, ok := selParts(lit.Type); ok && match(f, x, sel) {
-					visit(f, lit, sc)
-				}
-				if at, ok := lit.Type.(*ast.ArrayType); ok { // []*mcp.Tool{{...}}: elided element types
-					if x, sel, ok := selParts(at.Elt); ok && match(f, x, sel) {
-						for _, e := range lit.Elts {
-							if cl, ok := e.(*ast.CompositeLit); ok && cl.Type == nil {
-								visit(f, cl, sc)
-							}
-						}
+				if lit, ok := n.(*ast.CompositeLit); ok {
+					for _, m := range matchedLiterals(f, lit, match) {
+						visit(f, m, sc)
 					}
 				}
 				return true
 			})
 		}
 	}
+}
+
+// matchedLiterals returns lit itself when its type matches, plus the elided
+// elements of a slice literal such as []*mcp.Tool{{...}, {...}}.
+func matchedLiterals(f *agentFile, lit *ast.CompositeLit, match func(f *agentFile, x, sel string) bool) []*ast.CompositeLit {
+	if lit.Type == nil {
+		return nil
+	}
+	var out []*ast.CompositeLit
+	if x, sel, ok := selParts(lit.Type); ok && match(f, x, sel) {
+		out = append(out, lit)
+	}
+	at, ok := lit.Type.(*ast.ArrayType)
+	if !ok {
+		return out
+	}
+	if x, sel, ok := selParts(at.Elt); ok && match(f, x, sel) {
+		for _, e := range lit.Elts {
+			if cl, ok := e.(*ast.CompositeLit); ok && cl.Type == nil {
+				out = append(out, cl)
+			}
+		}
+	}
+	return out
 }
 
 func fieldExpr(lit *ast.CompositeLit, name string) ast.Expr {
@@ -385,23 +414,12 @@ func authorityFromMeta(p *agentPkg, sc scope, meta ast.Expr) (level, problem str
 	var raw ast.Expr
 	switch m := meta.(type) {
 	case *ast.CallExpr:
-		id, ok := m.Fun.(*ast.Ident)
-		if !ok || id.Name != agentAuthorityHelper || len(m.Args) != 1 {
-			return "", "builds Meta with something other than " + agentAuthorityHelper + "(level) or a Meta literal"
-		}
-		if !p.helperSetsKey() {
-			return "", "uses " + agentAuthorityHelper + "() but this package does not define it, or it does not set the " + agentAuthorityKey + " key"
+		if problem = p.checkHelperCall(m); problem != "" {
+			return "", problem
 		}
 		raw = m.Args[0]
 	case *ast.CompositeLit:
-		for _, e := range m.Elts {
-			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				if k, ok := sc.str(kv.Key, 0); ok && k == agentAuthorityKey {
-					raw = kv.Value
-				}
-			}
-		}
-		if raw == nil {
+		if raw = metaLiteralLevel(sc, m); raw == nil {
 			return "", "has a Meta literal without the " + agentAuthorityKey + " key"
 		}
 	default:
@@ -415,6 +433,30 @@ func authorityFromMeta(p *agentPkg, sc scope, meta ast.Expr) (level, problem str
 		return "", fmt.Sprintf("declares level %q, which is not one of L1, L2, L3, L4 (there is no L5)", v)
 	}
 	return v, ""
+}
+
+// checkHelperCall returns a problem unless m is authorityMeta(x) with a helper that sets the key.
+func (p *agentPkg) checkHelperCall(m *ast.CallExpr) string {
+	id, ok := m.Fun.(*ast.Ident)
+	if !ok || id.Name != agentAuthorityHelper || len(m.Args) != 1 {
+		return "builds Meta with something other than " + agentAuthorityHelper + "(level) or a Meta literal"
+	}
+	if !p.helperSetsKey() {
+		return "uses " + agentAuthorityHelper + "() but this package does not define it, or it does not set the " + agentAuthorityKey + " key"
+	}
+	return ""
+}
+
+// metaLiteralLevel returns the value expression of the authority key in a Meta literal, or nil.
+func metaLiteralLevel(sc scope, m *ast.CompositeLit) ast.Expr {
+	for _, e := range m.Elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			if k, ok := sc.str(kv.Key, 0); ok && k == agentAuthorityKey {
+				return kv.Value
+			}
+		}
+	}
+	return nil
 }
 
 // helperSetsKey reports whether this package defines authorityMeta and the body sets the authority key.
@@ -492,7 +534,7 @@ func mcpLevelViolations(s mcpScan) []string {
 				fmt.Sprintf("%s: MCP tool %q is declared %s but is not a read tool (%s); a write tool is L3 unless an ADR grants L4", t.pos, t.name, t.level, t.writeNote),
 				"if the tool really only reads, set `Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}`; if it writes, declare `Meta: authorityMeta(authorityL3)`."))
 		}
-		if t.level == "L4" && !(t.f.l4Found && t.f.l4ADR) {
+		if t.level == "L4" && !t.f.l4Documented() {
 			out = append(out, agentViolation(
 				fmt.Sprintf("%s: MCP tool %q is declared L4 but %s has no `//authority:L4 <adr>` comment naming the ADR that grants it", t.pos, t.name, t.f.path),
 				"write the ADR in the owning context first, then add `//authority:L4 ADR-0042 <one-line envelope>` to this file; otherwise declare L3."))
@@ -582,7 +624,7 @@ func a2aSkillViolations(skills []agentSkill) []string {
 				fmt.Sprintf("%s: A2A skill %q has the `write` tag but is declared authority:%s; a write skill is L3 unless an ADR grants L4", s.pos, s.id, s.level),
 				"change the tag to `authority:L3` (keep `write`); if the skill only reads, drop the `write` tag."))
 		}
-		if s.level == "L4" && !(s.f.l4Found && s.f.l4ADR) {
+		if s.level == "L4" && !s.f.l4Documented() {
 			out = append(out, agentViolation(
 				fmt.Sprintf("%s: A2A skill %q is declared authority:L4 but %s has no `//authority:L4 <adr>` comment naming the ADR that grants it", s.pos, s.id, s.f.path),
 				"write the ADR in the owning context first, then add `//authority:L4 ADR-0042 <one-line envelope>` to this file; otherwise declare authority:L3."))
@@ -601,40 +643,15 @@ func mcpSurfaceVerdict(root string) (skip string, violations []string, err error
 	if err != nil {
 		return "", nil, err
 	}
-	resources, prompts := 0, 0
-	for _, p := range pkgs {
-		for _, f := range p.files {
-			ast.Inspect(f.file, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					if se, ok := call.Fun.(*ast.SelectorExpr); ok {
-						switch se.Sel.Name {
-						case "AddResource", "AddResourceTemplate":
-							resources++
-						case "AddPrompt":
-							prompts++
-						}
-					}
-				}
-				return true
-			})
-		}
-	}
-	complete := resources > 0 && prompts > 0
-	if raw, rerr := os.ReadFile(filepath.Join(root, agentSurfacePendingMarker)); rerr == nil {
-		reason := ""
-		for _, line := range strings.Split(string(raw), "\n") {
-			if l := strings.TrimSpace(line); l != "" {
-				reason = l
-				break
-			}
-		}
+	resources, prompts := countSurfaceCalls(pkgs)
+	if reason, found := readPendingMarker(root); found {
 		if reason == "" {
 			return "", []string{agentViolation(
 				filepath.Join(root, agentSurfacePendingMarker)+" exists but is empty",
 				"put ONE line in it saying why the resources/prompts are not there yet (and who adds them), or delete the file and add them.")}, nil
 		}
 		note := ""
-		if complete {
+		if resources > 0 && prompts > 0 {
 			note = " (the surface is already complete: delete the marker)"
 		}
 		return "agent surface pending: " + reason + note, nil, nil
@@ -652,6 +669,46 @@ func mcpSurfaceVerdict(root string) (skip string, violations []string, err error
 				"if the repo is not rolled yet, park this test with a one-line reason in internal/adapters/inbound/mcp/"+agentSurfacePendingMarker+"."))
 	}
 	return "", violations, nil
+}
+
+// countSurfaceCalls counts AddResource/AddResourceTemplate and AddPrompt calls in non-test sources.
+func countSurfaceCalls(pkgs []*agentPkg) (resources, prompts int) {
+	for _, p := range pkgs {
+		for _, f := range p.files {
+			ast.Inspect(f.file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				se, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch se.Sel.Name {
+				case "AddResource", "AddResourceTemplate":
+					resources++
+				case "AddPrompt":
+					prompts++
+				}
+				return true
+			})
+		}
+	}
+	return resources, prompts
+}
+
+// readPendingMarker returns the marker's first non-empty line and whether the marker exists.
+func readPendingMarker(root string) (reason string, found bool) {
+	raw, err := os.ReadFile(filepath.Join(root, agentSurfacePendingMarker))
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			return l, true
+		}
+	}
+	return "", true
 }
 
 // ---------------------------------------------------------------------
@@ -697,10 +754,19 @@ func mustScanMCP(t *testing.T, root string) mcpScan {
 // the tests that run against the real adapter
 // ---------------------------------------------------------------------
 
+func logTools(t *testing.T, s mcpScan) {
+	t.Helper()
+	for _, tool := range s.tools {
+		t.Logf("checked tool %q: authority %q readOnly=%v", tool.name, tool.level, tool.readOnly)
+	}
+}
+
 // TestEveryMCPToolDeclaresAuthority: every mcp.Tool literal declares its level.
 func TestEveryMCPToolDeclaresAuthority(t *testing.T) {
 	requireMCPAdapter(t)
-	for _, v := range mcpDeclarationViolations(mustScanMCP(t, mcpAdapterDir)) {
+	scan := mustScanMCP(t, mcpAdapterDir)
+	logTools(t, scan)
+	for _, v := range mcpDeclarationViolations(scan) {
 		t.Error(v)
 	}
 }
@@ -708,7 +774,9 @@ func TestEveryMCPToolDeclaresAuthority(t *testing.T) {
 // TestMCPWriteToolsAreAtLeastL3: a tool that is not provably read-only is L3, or L4 with an ADR comment.
 func TestMCPWriteToolsAreAtLeastL3(t *testing.T) {
 	requireMCPAdapter(t)
-	for _, v := range mcpLevelViolations(mustScanMCP(t, mcpAdapterDir)) {
+	scan := mustScanMCP(t, mcpAdapterDir)
+	logTools(t, scan)
+	for _, v := range mcpLevelViolations(scan) {
 		t.Error(v)
 	}
 }
@@ -724,6 +792,9 @@ func TestA2ASkillsDeclareAuthority(t *testing.T) {
 	}
 	if len(skills) == 0 {
 		t.Fatalf("%s exists but no a2a.AgentSkill{...} literal was found; the sensor is looking in the wrong place (vacuous pass refused)", a2aAdapterDir)
+	}
+	for _, s := range skills {
+		t.Logf("checked skill %q: authority %q write=%v", s.id, s.level, s.write)
 	}
 	for _, v := range a2aSkillViolations(skills) {
 		t.Error(v)

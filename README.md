@@ -56,6 +56,18 @@ the other fleet rules this template delivers live in warehouse-docs
 (<https://iqvo.github.io/warehouse-docs/>) under agents/fleet — this repo
 carries their canonical copies under `.claude/rules/fleet/`.
 
+## Agent authority fitness tests
+
+`internal/architecture/mcp_authority_fitness_test.go` is the portable, static
+check for the fleet rule `agent-authority`: every MCP tool and A2A skill
+declares a level L1..L4, write tools are at least L3, and an MCP server offers
+at least one resource and one prompt. It skips on a service with no MCP/A2A
+adapter. A repo not yet rolled parks only the resource/prompt check with a
+one-line file `internal/adapters/inbound/mcp/.agent-surface-pending`; L4
+needs a `//authority:L4 ADR-<n> ...` comment. Details and the accepted
+declaration shape: HARNESS.md, "Agent authority declarations". The file is
+copied per repo in a rollout wave (it is not in `MANAGED`).
+
 ## Local development / quality gate
 
 `make check` runs the template's self-test (the same target new services

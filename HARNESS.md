@@ -155,6 +155,19 @@ already-lived incident, not a hypothetical:
   (`package features_test`, `Paths: "."`; `make bdd` still finds
   `TestFeatures`), binaries in `cmd/<name>/`, packages in `internal/`.
 
+- **Agent authority** (`mcp_authority_fitness_test.go`: `TestEveryMCPToolDeclaresAuthority`,
+  `TestMCPWriteToolsAreAtLeastL3`, `TestA2ASkillsDeclareAuthority`,
+  `TestMCPServerOffersResourceAndPrompt`; sensors' own tests
+  `TestMCPAuthoritySensorBites`, `TestMCPWriteLevelSensorBites`,
+  `TestA2AAuthoritySensorBites`, `TestMCPSurfaceSensorBites`,
+  `TestAgentAdapterSkipRules`) — Agentic Standard v2, fleet rule
+  `agent-authority` (warehouse-docs `agents/fleet/agent-authority.md`). Static
+  `go/ast` scan, no server and no database. See the section "Agent authority
+  declarations" below for the accepted shape, the L4 comment and the pending
+  marker. Skips when the service has no `internal/adapters/inbound/mcp` (or
+  its go.mod lacks `modelcontextprotocol/go-sdk`); a service with the adapter
+  that yields zero tool literals fails (no vacuous pass).
+
 `scripts/scaffold-selftest.sh` (CI: `Template self-test`) generates a
 throwaway service with `new-service.sh` and proves both sensors red then green,
 and that the generated packaging files carry no placeholder.
@@ -172,6 +185,43 @@ the template has no projector. Each projector guards it with its own unit test
 of the stop path (process-path-management `TestAwaitStop_ConsumerLoopExitIsAnError`,
 workforce-management `TestSuperviseConsumer_*`); copy that shape when a new
 service adds a projector.
+
+## Agent authority declarations
+
+The sensors in `internal/architecture/mcp_authority_fitness_test.go` check, by
+static AST scan of `internal/adapters/inbound/mcp` and `.../a2a`:
+
+- **Every MCP tool declares its level.** The pinned shape (the one
+  workforce-management ships) is `Meta: authorityMeta(authorityL3)` with
+  `const authorityMetaKey = "com.warehouse/authority"`, the constants
+  `authorityL1`..`authorityL4` and
+  `func authorityMeta(level string) mcp.Meta { return mcp.Meta{authorityMetaKey: level} }`
+  in the adapter package. A string literal argument, and an inline
+  `mcp.Meta{"com.warehouse/authority": "L3"}` literal, are accepted as the same
+  thing; a level computed at run time is rejected because the sensor cannot
+  read it.
+- **Write tools are at least L3.** A tool whose `Annotations` do not set
+  `ReadOnlyHint: true` (a literal, or a local variable assigned the literal
+  `true`) must not be L1/L2.
+- **L4 needs an ADR.** Put a comment in the same file:
+  `//authority:L4 ADR-0042 <one-line envelope>`. Without an ADR reference the
+  test fails.
+- **A2A skills** carry the tag `authority:L1`..`authority:L4`; a skill tagged
+  `write` is L3/L4 (L4 with the same comment).
+- **Resources and prompts.** The MCP adapter calls `AddResource` or
+  `AddResourceTemplate` at least once and `AddPrompt` at least once.
+
+Rollout is phased, so the resource/prompt test has an explicit allow marker:
+create `internal/adapters/inbound/mcp/.agent-surface-pending` holding ONE line
+saying why (and who adds them). The test then skips and prints
+`agent surface pending: <reason>`, so the repo is not red but visibly pending;
+an empty marker fails, and a marker on an already complete surface says to
+delete it. The marker only parks the resource/prompt test, never the authority
+tests. Delete it when the surface lands.
+
+These tests ship as UNMANAGED copies (not in `tools/migrate_v3.py` `MANAGED`):
+a repo adopts them in a rollout wave together with the declarations, otherwise
+its next sync would turn it red.
 
 ## Mutation testing: what it catches that coverage doesn't
 
