@@ -168,6 +168,66 @@ class FleetRulesNamespace(unittest.TestCase):
                          (TPL / ".claude/rules/fleet/cloudevents.md").read_bytes())
 
 
+class CrossRepoRuleLinks(unittest.TestCase):
+    """migrate_v3's ref rewrite maps a generic skill's `.claude/rules/mfe-remotes.md` to the repo's own frontend
+    rule. product-master's how-to-add-a-frontend-remote skill cites warehouse-console's mfe-remotes rule ("see that
+    repo's ..."): the rewrite turned it into a link to product-master's frontend.md, a different rule. A link to
+    ANOTHER repo's rule must be left alone; only a bare (local) link is rewritten."""
+
+    SKILL = ("# Adding a frontend remote\n\n"
+             "This is the layer that `warehouse-console` (the shell) lazy-loads — see that repo's\n"
+             "`.claude/rules/mfe-remotes.md` for the shell-side half of this contract.\n"
+             "Also warehouse-console's `.claude/rules/mfe-remotes.md`, and\n"
+             "`warehouse-console/.claude/rules/mfe-remotes.md`, and IQVO/warehouse-console:.claude/rules/mfe-remotes.md.\n"
+             "The boundary lives in the sibling repository's `.claude/rules/bounded-context-boundary.md`.\n"
+             "LOCAL: read `.claude/rules/mfe-remotes.md` and this repo's `.claude/rules/bounded-context-boundary.md`.\n")
+
+    def run_v3(self):
+        f = Fixture(go=True, rules={"frontend.md": PLAIN, "domain-model.md": PLAIN})
+        self.addCleanup(f.close)
+        skill = f.root / ".claude" / "skills" / "how-to-add-a-frontend-remote" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(self.SKILL)
+        f.run(V3)
+        return f, skill.read_text()
+
+    def test_links_to_another_repos_rule_are_left_alone(self):
+        _, text = self.run_v3()
+        cross = text.split("LOCAL:")[0]
+        self.assertEqual(cross, self.SKILL.split("LOCAL:")[0],
+                         "migrate_v3 rewrote a link to ANOTHER repo's rule into a local rule")
+
+    def test_local_links_are_still_rewritten(self):
+        f, text = self.run_v3()
+        local = text.split("LOCAL:")[1]
+        self.assertIn("`.claude/rules/frontend.md`", local)
+        self.assertIn("this repo's `.claude/rules/domain-model.md`", local)
+        self.assertNotIn("refs rewritten", f.run(V3, "--dry-run"), "the ref rewrite is not idempotent")
+
+
+class TemplateCarriesItsOwnMigrations(unittest.TestCase):
+    """The template's ci.yml.template / Makefile are what a new scaffold starts from. They lagged behind what
+    migrate_v3/v4 add to every repo: the guide-lint job ran neither repo_lint.py nor test_repo_lint.py, so the
+    'repo_lint R11 (guide-lint job)' comment in the scaffold's own test job was false on day one."""
+
+    def test_migrations_are_a_no_op_on_the_template(self):
+        for script in (V3, V4):
+            with self.subTest(script=script.name):
+                r = subprocess.run([sys.executable, str(script), "--repo", str(TPL), "--template", str(TPL),
+                                    "--dry-run"], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout.strip(), "", f"{script.name} would still change the template itself")
+
+    def test_guide_lint_job_runs_repo_lint_and_its_tests(self):
+        v3 = load("migrate_v3_for_test", V3)
+        lines = (TPL / ".github/workflows/ci.yml.template").read_text().splitlines()
+        b = v3.Migrator._job_bounds(lines, "guide-lint")
+        self.assertTrue(b, "ci.yml.template has no guide-lint job")
+        job = "\n".join(lines[b[0]:b[1]])
+        for step in ("guide_lint.py", "repo_lint.py", "test_repo_lint.py", "test_hook.py", "test_red_issue.py"):
+            self.assertIn(f"python3 scripts/harness/{step}", job, f"the guide-lint job does not run {step}")
+
+
 class HealthDriftLists(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

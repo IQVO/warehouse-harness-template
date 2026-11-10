@@ -28,7 +28,7 @@ readers can no longer map code to domain conversation.
    is drift — even if the math is correct, it fragments the vocabulary.
    Flag it and point at the existing name.
 2. **A domain type/method named in implementation terms instead of
-   domain terms.** `internal/domain/` code should read like the ubiquitous
+   domain terms.** internal/domain/ code should read like the ubiquitous
    language, not like database/HTTP vocabulary — a method called
    `UpdateRow` or `PatchState` where the domain-model doc would call the
    equivalent operation `Stow`/`Revoke`/`RunCycleCount` is drift, and the

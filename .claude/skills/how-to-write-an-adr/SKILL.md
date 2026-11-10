@@ -18,7 +18,7 @@ addition inside an already-decided architecture doesn't.
 `docs/docs/adr/NNNN-kebab-case-title.md`, four-digit zero-padded,
 sequential — check the highest existing number
 (`git ls-tree --name-only origin/develop -- docs/docs/adr/` and pick the
-next integer, never reuse or guess). `docs/docs/adr/about.md` explains the
+next integer, never reuse or guess). docs/docs/adr/about.md explains the
 format to readers; you don't need to touch it when adding a new ADR.
 
 ## Frontmatter (Docusaurus needs all five fields)
@@ -70,7 +70,7 @@ lists benefits reads as marketing, not a decision record.
 ```
 
 The `## Decision` section is the part worth the most editing effort: see
-ADR-0013 (`docs/docs/adr/0013-location-classification-via-facility-events.md`)
+inventory-storage's location-classification-via-facility-events ADR
 for a model example — it states the exact mechanism (event-fed local
 cache replacing a synchronous HTTP read), names the readiness-gate design,
 and is specific enough that Task "how-to-add-an-integration-event"'s
@@ -81,8 +81,8 @@ consumer-group guidance can point straight at it.
 Don't edit the old ADR's Decision section. Add a `## Status` line noting
 `Superseded by ADR-XXXX` on the OLD one (a one-line patch), and open the
 new ADR referencing it: `**Accepted.** <date>. Supersedes [NN. Old title](./NNNN-old-slug.md).`
-— see ADR-0015 (`0015-remove-rest-identity-layer.md`) for the exact
-wording pattern superseding ADR-0014.
+— see inventory-storage's remove-rest-identity-layer ADR (it supersedes
+its rest-identity-adoption ADR) for the exact wording pattern.
 
 ## Cross-repo decisions: use a companion ADR, not one repo's private opinion
 
@@ -90,7 +90,8 @@ When a decision genuinely spans two bounded-context repos (e.g.
 facility-layout's functional-location roles enabling wes-work-planning's
 travel-graph feature), write ONE ADR per repo, each referencing the other
 explicitly as "the companion ADR" with a one-line description of the
-split of responsibility — see facility-layout's ADR-0016/0017 pair. Don't
+split of responsibility — see facility-layout's companion ADR pair for
+functional-location roles. Don't
 write the decision once in one repo and expect the other repo's readers
 to find it; each bounded context's docs site is read independently.
 

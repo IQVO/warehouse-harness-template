@@ -17,7 +17,7 @@
 
 - `<EventName>` — <when it's raised, what state change it represents>.
 
-## Key use cases (`internal/application/usecases`)
+## Key use cases (internal/application/usecases)
 
 - `<UseCaseName>` — <one line: what it orchestrates, which port(s) it
   calls>.

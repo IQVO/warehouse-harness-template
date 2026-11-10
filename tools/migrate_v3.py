@@ -79,6 +79,31 @@ SYMLINKS = {".agents/skills": "../.claude/skills"}
 # warehouse one, so a retail-network repo keeps its own (see Migrator.retailnetwork).
 NAMESPACE_RULES = [".claude/rules/fleet/cloudevents.md"]
 
+# A rule path preceded by another repo's possessive ("see that repo's", "warehouse-console's") or prefixed with a
+# repo ("warehouse-console/", "IQVO/x:") points at ANOTHER repo's rule: the local-rule substitution must skip it.
+_OWN = re.compile(r"\b(this|our|the same)\s+(repo|repository|service)\s*$", re.I)
+_POSSESSIVE = re.compile(r"[\w`-]+(?:\s+[\w-]+)?['\u2019]s\s*$")
+
+
+def is_cross_repo_ref(text: str, start: int) -> bool:
+    """True when the rule path at text[start:] names another repository's file, not this repo's."""
+    if start > 0 and text[start - 1] in "/:":
+        return True  # warehouse-console/.claude/rules/x.md, IQVO/warehouse-console:.claude/rules/x.md
+    before = text[max(0, start - 80):start].rstrip("`").rstrip()
+    m = _POSSESSIVE.search(before)
+    return bool(m) and not _OWN.search(before[:-2])
+
+
+def replace_local_refs(text: str, old: str, rep: str) -> str:
+    """Replace `old` with `rep` only where it is this repo's own reference (see is_cross_repo_ref)."""
+    out, i = [], 0
+    for m in re.finditer(re.escape(old), text):
+        out.append(text[i:m.start()])
+        out.append(m.group(0) if is_cross_repo_ref(text, m.start()) else rep)
+        i = m.end()
+    out.append(text[i:])
+    return "".join(out)
+
 SKILL_META = {
     "how-to-add-a-rest-endpoint": (
         "Add or change a REST endpoint in this service in the fleet's hexagonal order (domain invariant, use case, "
@@ -581,7 +606,7 @@ class Migrator:
             for pat, rep in pats:
                 new = pat.sub(rep, new)
             for old, rep in subs.items():
-                new = new.replace(old, rep)
+                new = replace_local_refs(new, old, rep)
             if new != text:
                 self.say(f"refs rewritten in {os.path.relpath(f, self.repo)}")
                 if not self.dry:
