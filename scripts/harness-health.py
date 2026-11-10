@@ -9,7 +9,8 @@ harness-health adds the checks that catch those, per repo, from origin/develop +
   context  claude_lines, unscoped_rule_lines   always-loaded context size (lower is better)
   hooks    claude/codex/opencode adapters + scripts/harness/hook.py present
   ci       guide-lint job, repo_lint config sensors (cfg), ai-review workflow, make check-fast
-  sync     managed files identical to this template (-N = N files drifted; the weekly sync opens the PR)
+  sync     managed files identical to this template (-N = N files drifted; the weekly sync opens the PR):
+           migrate_v3's MANAGED (+ GS1 copies) and migrate_v4's V4_MANAGED (INCIDENTS.md, review agents)
   runtime  last scheduled run per workflow (green/red), open harness:red issues
   version  harness-template: vN recorded in AGENTS.md
 
@@ -67,30 +68,41 @@ CORE_MANAGED = ["scripts/harness/hook.py", "scripts/harness/guide_lint.py", "scr
                 ".claude/settings.json"]
 
 
+def _list(path: Path, name: str) -> list[str]:
+    txt = path.read_text()
+    block = txt[txt.index(name):]
+    block = block[:block.index("]")]
+    return re.findall(r'"([^"]+)"', block)
+
+
 def managed_list() -> list[str]:
-    """MANAGED + GS1_PACKAGE file lists from the template's own migrate_v3.py (single source of truth).
+    """MANAGED + GS1_PACKAGE (tools/migrate_v3.py) + V4_MANAGED (tools/migrate_v4.py): the single source of truth.
 
     GS1_PACKAGE files are opt-in: a repo without them is not drift (they are skipped when absent, since
     they are not in CORE_MANAGED), but a repo that carries a copy must keep it byte-identical.
     """
-    txt = (HERE.parent / "tools" / "migrate_v3.py").read_text()
     out: list[str] = []
     for name in ("MANAGED = [", "GS1_PACKAGE = ["):
-        block = txt[txt.index(name):]
-        block = block[:block.index("]")]
-        out += re.findall(r'"([^"]+)"', block)
+        out += _list(HERE.parent / "tools" / "migrate_v3.py", name)
+    out += [r for r in v4_managed() if r not in out]
     return out
+
+
+def v4_managed() -> list[str]:
+    return _list(HERE.parent / "tools" / "migrate_v4.py", "V4_MANAGED = [")
 
 
 def managed_drift(repo: Path, files: set) -> list[str]:
     """Managed files that differ from (or, for the core set, are missing vs) this template. Weekly sync closes them."""
     drift = []
+    # migrate_v4's V4_MANAGED files (INCIDENTS.md, the review subagents, test_red_issue.py) are fleet-mandatory
+    # like CORE_MANAGED: a repo missing one is drift, not "in sync".
     for rel in managed_list():
         src = HERE.parent / rel
         if not src.is_file():
             continue
         if rel not in files:
-            if rel in CORE_MANAGED:
+            if rel in CORE_MANAGED or rel in v4_managed():
                 drift.append(f"{rel} (missing)")
             continue
         if show(repo, rel) != src.read_text(errors="replace"):

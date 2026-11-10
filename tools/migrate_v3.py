@@ -16,7 +16,8 @@ What it does (mechanical, no per-repo judgement):
   6. ci.yml    adds an ADVISORY `guide-lint` job; adds harness:red issue open/close steps
                to the scheduled `mutation` and `drift` jobs.
   7. CLAUDE.md appends a generated "Scoped rules" pointer table between markers so
-               runtimes WITHOUT path-scoped rules (OpenCode, Codex) still find them.
+               runtimes WITHOUT path-scoped rules (OpenCode, Codex) still find them. Both profiles
+               list every top-level rule that declares `paths:` (platform only reads, never scopes).
                (real file resolved through the AGENTS.md<->CLAUDE.md symlink)
   8. .gitignore  ignores .claude/settings.local.json.
 
@@ -128,6 +129,45 @@ RULE_PATHS = {
 }
 
 
+def _unquote(item):
+    item = item.strip()
+    if item[:1] in "\"'":
+        end = item.find(item[0], 1)
+        return item[1:end] if end > 0 else item[1:]
+    return item.split(" #", 1)[0].strip()
+
+
+def rule_paths(text):
+    """The `paths:` globs a rule's YAML frontmatter declares, or None (no frontmatter / no paths: = always-on).
+
+    Read-only. Accepts the block list (indented or not, quoted or not) and the inline `[a, b]` / scalar forms.
+    """
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    fm = text[3:end] if end >= 0 else ""
+    m = re.search(r"^paths:[ \t]*(.*)$", fm, re.M)
+    if not m:
+        return None
+    rest = m.group(1).strip()
+    if rest.startswith("["):
+        inner = rest[1:rest.rfind("]")] if "]" in rest else rest[1:]
+        globs = [_unquote(x) for x in inner.split(",")]
+    elif rest and not rest.startswith("#"):
+        globs = [_unquote(rest)]
+    else:
+        globs = []
+        for line in fm[m.end():].split("\n")[1:]:
+            item = re.match(r"^[ \t]*-[ \t]+(.*)$", line)
+            if not item:
+                if line.strip() == "" or line.lstrip().startswith("#"):
+                    continue
+                break
+            globs.append(_unquote(item.group(1)))
+    globs = [g for g in globs if g]
+    return globs or None
+
+
 def sh(args, cwd, check=True):
     return subprocess.run(args, cwd=cwd, check=check, capture_output=True, text=True)
 
@@ -206,9 +246,9 @@ class Migrator:
             rel = f".claude/rules/{f}"
             text = self.read(rel)
             if text.startswith("---"):
-                m = re.search(r"^paths:\s*\n((?:\s+-\s.*\n)+)", text, re.M)
-                if m:
-                    scoped.append((f, re.findall(r'-\s*"?([^"\n]+)"?', m.group(1))))
+                declared = rule_paths(text)
+                if declared:
+                    scoped.append((f, declared))
                 continue
             paths = RULE_PATHS.get(f)
             if not paths:
@@ -218,6 +258,23 @@ class Migrator:
             self.write(rel, fm + text)
             scoped.append((f, paths))
         return scoped
+
+    def scoped_rules(self):
+        """Read-only: the top-level rules that ALREADY declare `paths:` (never adds scoping).
+
+        The platform profile and migrate_v4 build the generated CLAUDE.md table from this. The platform
+        profile once skipped the scan entirely and rewrote every non-Go repo's table EMPTY.
+        """
+        rdir = self.p(".claude", "rules")
+        if not os.path.isdir(rdir):
+            return []
+        out = []
+        for f in sorted(os.listdir(rdir)):
+            if f.endswith(".md") and os.path.isfile(os.path.join(rdir, f)):
+                declared = rule_paths(self.read(f".claude/rules/{f}"))
+                if declared:
+                    out.append((f, declared))
+        return out
 
     # 4 ---------------------------------------------------------------------
     def managed(self):
@@ -517,10 +574,11 @@ class Migrator:
             self.write(".gitignore", text.rstrip("\n") + "\n" + "\n".join(add) + "\n")
 
     def run(self):
-        scoped = []
         if self.profile == "service":
             self.skills()
             scoped = self.rules()
+        else:  # platform: list the rules the repo scoped itself; never invent Go-service globs for it
+            scoped = self.scoped_rules()
         self.managed()
         self.gs1_package()
         self.makefile()

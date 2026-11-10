@@ -332,7 +332,7 @@ v3 makes the guides LOAD and puts sensors INSIDE the agent loop, for Claude Code
 | Guide freshness | `scripts/harness/guide_lint.py` / `make guide-lint` (CI job `guide-lint`) | CPU, ms | PR |
 | Red-sensor loop | `scripts/harness/red_issue.py` steps in scheduled jobs -> `harness:red` issue | none | weekly |
 | Advisory AI review | `.github/workflows/ai-review.yml` (needs `ANTHROPIC_API_KEY`; no-ops without it) | API spend | PR into develop |
-| Health report | `scripts/harness-health.py` (does it WORK: skills load, hooks wired, scheduled runs green) | gh calls | weekly cron |
+| Health report | `scripts/harness-health.py` (does it WORK: skills load, hooks wired, scheduled runs green; `sync` drift covers migrate_v3 `MANAGED` and migrate_v4 `V4_MANAGED`, tested by `tools/test_harness_sync.py`) | gh calls | weekly cron |
 
 Rules live ONLY in `hook.py`; the three adapters translate events and cannot drift. The hooks block
 pushes to develop/main, `--no-verify`, force-push, `rm -rf` on non-scratch paths, destructive git, and

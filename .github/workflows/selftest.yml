@@ -35,6 +35,8 @@ jobs:
         run: python3 scripts/harness/test_fleet_drift.py
       - name: GS1 package distribution (opt-in managed copy, drift list)
         run: python3 tools/test_migrate_gs1.py
+      - name: Weekly-sync tooling (scoped-rules block in both profiles + migrate_v4, harness-health V4_MANAGED drift)
+        run: python3 tools/test_harness_sync.py
       - name: GS1 package is green on its own (tests, byte-identity digest)
         run: go test ./internal/domain/shared/gs1/ -race -count=1
       - name: Python scripts compile
