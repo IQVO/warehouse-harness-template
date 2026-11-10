@@ -137,6 +137,37 @@ class ScopedRulesBlock(unittest.TestCase):
         self.assertIn("`.claude/rules/offline-outbox.md`", f.block())
 
 
+class FleetRulesNamespace(unittest.TestCase):
+    """The template carries the WAREHOUSE fleet rule set only; a retail-network repo's CloudEvents rule is its own
+    variant (warehouse-docs agents/retailnetwork/). A fleet-wide sync would have overwritten it with the warehouse one."""
+
+    RETAIL = ("---\npaths:\n  - \"apis/asyncapi*\"\n---\n\n# Rule: CloudEvents 1.0 on every Kafka message (retail network)\n\n"
+              "- `type` = `com.retailnetwork.<tier>.<context>.<entity>.<Event>`\n")
+
+    def make(self, cloudevents):
+        f = Fixture(go=True, rules={})
+        self.addCleanup(f.close)
+        fleet = f.root / ".claude" / "rules" / "fleet"
+        fleet.mkdir(parents=True)
+        (fleet / "cloudevents.md").write_text(cloudevents)
+        return f
+
+    def test_retailnetwork_cloudevents_rule_is_kept(self):
+        f = self.make(self.RETAIL)
+        f.run(V3)
+        self.assertEqual((f.root / ".claude/rules/fleet/cloudevents.md").read_text(), self.RETAIL,
+                         "migrate_v3 replaced the retail-network CloudEvents rule with the warehouse one")
+        shared = TPL / ".claude/rules/fleet/no-auth-and-mcp.md"
+        self.assertEqual((f.root / ".claude/rules/fleet/no-auth-and-mcp.md").read_bytes(), shared.read_bytes(),
+                         "namespace-neutral fleet rules must still be synced")
+
+    def test_warehouse_cloudevents_rule_is_synced(self):
+        f = self.make("---\npaths:\n  - \"apis/asyncapi*\"\n---\n\n# Fleet rule: CloudEvents (old copy)\n")
+        f.run(V3)
+        self.assertEqual((f.root / ".claude/rules/fleet/cloudevents.md").read_bytes(),
+                         (TPL / ".claude/rules/fleet/cloudevents.md").read_bytes())
+
+
 class HealthDriftLists(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
