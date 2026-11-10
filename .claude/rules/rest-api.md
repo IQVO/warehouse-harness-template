@@ -8,7 +8,7 @@ paths:
 <!-- TEMPLATE (warehouse-harness-template v2): fill in for THIS repo. -->
 # REST API (inbound adapter)
 
-List every route -> use case mapping, kept in sync with `apis/openapi.yaml`
+List every route -> use case mapping, kept in sync with apis/openapi.yaml
 (the `docs-api-drift` CI job fails if generated docs disagree with this
 file's own spec, but this file itself is documentation for an agent, not
 generated -- keep it manually accurate).

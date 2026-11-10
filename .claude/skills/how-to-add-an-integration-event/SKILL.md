@@ -16,15 +16,14 @@ shared-broker reality has already caused a real incident once.
 
 ### 1. Is it actually cross-service?
 
-Not every domain event this service raises belongs on the wire. Check
-`internal/adapters/outbound/kafka/publisher.go`'s doc comment — this repo
-forwards only `StockReserved`/`ReservationRevoked`; everything else is a
-local concern published only to the Postgres outbox
-(`internal/adapters/outbound/postgres/event_publisher.go`) for audit, not
-broadcast. Before adding a new event to the Kafka publisher, confirm a
-sibling context genuinely needs to react to it — check
-`docs/docs/ddd/context-map.md` or the equivalent ubiquitous-language doc
-for who's actually downstream.
+Not every domain event this service raises belongs on the wire. The
+Kafka publisher's doc comment should say which events it forwards (in
+inventory-storage only `StockReserved`/`ReservationRevoked` go to Kafka;
+everything else is a local concern kept in the Postgres outbox for audit,
+not broadcast). Before adding a new event to the Kafka publisher, confirm a
+sibling context genuinely needs to react to it — check this repo's context
+map page or the equivalent ubiquitous-language doc for who's actually
+downstream.
 
 ### 2. Envelope: CloudEvents 1.0, structured mode — MANDATORY
 
@@ -54,7 +53,7 @@ shape, no dual-write, no `EVENT_ENVELOPE_MODE` toggle (see
 lowercase except the final PascalCase event name — e.g.
 `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`. Take
 the subdomain/context segment from the subdomain table on warehouse-docs'
-Event Standard page (`docs/strategic-design/event-standard-cloudevents.md`);
+Event Standard page (docs/strategic-design/event-standard-cloudevents.md);
 don't guess it. The same `type` is used on the analytics topic; only
 `dataschema` changes (`…:analytics:<EventName>:v1`).
 
@@ -65,7 +64,7 @@ exist as a domain event the aggregate raises — publishing wires an
 EXISTING domain event onto Kafka, it doesn't invent a new payload shape at
 the adapter layer). In the Kafka publisher adapter:
 
-- Encode ONLY through `internal/adapters/kafka/cloudevents` (copied from
+- Encode ONLY through internal/adapters/kafka/cloudevents (copied from
   this template's `templates/cloudevents/cloudevents.go.tmpl`):
   ```go
   value, err := cloudevents.New(cloudevents.Spec{
@@ -91,7 +90,7 @@ the adapter layer). In the Kafka publisher adapter:
 
 ### 4. Contract + docs
 
-- Add the message to `apis/asyncapi.yaml` under this service's channel
+- Add the message to apis/asyncapi.yaml under this service's channel
   (`defaultContentType: application/cloudevents+json`, the shared
   CloudEvents envelope schema with every attribute required), with its
   exact `type` const and `dataschema`, matching the entity-grouping
@@ -120,8 +119,8 @@ hardcoded `localhost:9092` fails CI).
 ### 1. Never import the sibling's Go packages
 
 This service knows a sibling's topic name, its exact CloudEvents `type`
-strings and payload shape ONLY — never its Go types. See `internal/adapters/outbound/facilitycache/consumer.go`'s
-own doc comment: "This service has no business knowing anything else
+strings and payload shape ONLY — never its Go types. See the doc comment
+of inventory-storage's facilitycache consumer (its facility-layout read model): "This service has no business knowing anything else
 about that context beyond this topic name and the envelope/payload shapes
 below." Hand-mirror the payload struct locally; do not add a Go module
 dependency on the sibling repo (an architecture fitness test in most
@@ -170,7 +169,7 @@ EXACTLY what you want: pick up where the single instance left off.
 **Pattern B — per-process-unique consumer group (a generated id).** Use
 when this consumer rebuilds a complete read model from a topic's FULL
 history on every start (an event-sourced local cache, not a work queue) —
-see `facilitycache/consumer.go`'s `consumerGroupPrefix` +
+see inventory-storage's facilitycache consumer, `consumerGroupPrefix` +
 `uniqueConsumerGroup()`. The group id MUST be unique per process instance
 (hostname+PID+timestamp), NEVER a fixed shared string. Consumer group
 offsets are shared infrastructure state: a brand-new process joining a

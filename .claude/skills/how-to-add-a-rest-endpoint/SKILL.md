@@ -12,10 +12,12 @@ this order — domain first, adapter last — never the reverse; writing the
 HTTP handler before the domain invariant it enforces produces handlers
 that validate nothing and use cases that get bypassed.
 
-This walks the exact path `POST /bins/{binId}/cycle-count` took
-(`internal/application/usecases/run_cycle_count.go` +
-`internal/adapters/inbound/http/server.go`'s `handleRunCycleCount`) as the
-concrete worked example — read those two files alongside this guide.
+This walks the exact path `POST /bins/{binId}/cycle-count` took in
+inventory-storage (its run_cycle_count use case under
+internal/application/usecases/ and the `handleRunCycleCount` handler in its
+HTTP server adapter) as the concrete worked example — read those two files
+in that repo alongside this guide until this service has its own first
+endpoint to point at.
 
 ## 1. Domain first: does an invariant already exist, or do you need one?
 
@@ -23,12 +25,12 @@ Check `internal/domain/<aggregate>/` for the rule this endpoint enforces.
 A REST endpoint should almost never contain business logic itself — it
 decodes a request, calls a use case, encodes the result. If the operation
 needs a new domain rule (e.g. "a counted quantity below zero is invalid"),
-add it to the aggregate/value-object in `internal/domain/`, with its own
+add it to the aggregate/value-object in internal/domain/, with its own
 table-driven unit test, BEFORE touching the application or adapter layers.
 
 ## 2. Application: define the use case
 
-Add a new file in `internal/application/usecases/` (one file per use
+Add a new file in internal/application/usecases/ (one file per use
 case, this repo's convention — not one giant `usecases.go`). Shape:
 
 ```go
@@ -57,19 +59,19 @@ func (uc *<Verb><Noun>) Execute(ctx context.Context, /* domain-typed args */) (<
 }
 ```
 
-Add the port to `internal/application/ports/` if it doesn't exist yet —
+Add the port to internal/application/ports/ if it doesn't exist yet —
 ports are interfaces ONLY (`TestPortsAreCustomerOwned`/
 `TestApplicationPortsContainOnlyInterfaces`-style fitness tests in
 `internal/architecture/` enforce this; a struct or function in a ports
 package fails CI).
 
 Write the use case's unit test against the in-memory adapter
-(`internal/adapters/outbound/memory/`) — never a real Postgres/HTTP call
+(internal/adapters/outbound/memory/) — never a real Postgres/HTTP call
 in a unit test. Cover the success path AND the domain-rule failure path.
 
 ## 3. Adapter: wire the HTTP handler
 
-In `internal/adapters/inbound/http/`:
+In internal/adapters/inbound/http/:
 
 1. `dto.go` — add the request/response DTO structs (JSON tags, this repo's
    naming convention: `<verb><noun>Request`/`<verb><noun>Response`).
@@ -95,7 +97,7 @@ endpoint can produce).
 
 ## 4. Contract: update OpenAPI, then regenerate docs
 
-Add the path to `apis/openapi.yaml` (request/response schemas, the RFC
+Add the path to apis/openapi.yaml (request/response schemas, the RFC
 7807 problem-detail response for each error case — see the existing
 `/bins/{binId}/cycle-count` entry for the shape).
 
@@ -112,8 +114,8 @@ npm run gen-api-docs
 
 If this endpoint is user-facing behaviour (not purely internal
 plumbing), add a `.feature` file under `features/` exercising it
-end-to-end against the real HTTP server — see `features/cycle_count.feature`
-for the exact shape this repo's `bdd` CI job expects (Given/When/Then over
+end-to-end against the real HTTP server — see inventory-storage's
+cycle_count feature file for the exact shape the `bdd` CI job expects (Given/When/Then over
 real HTTP, not mocked).
 
 ## 6. Verify before opening the PR

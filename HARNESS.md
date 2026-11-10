@@ -171,7 +171,10 @@ already-lived incident, not a hypothetical:
 
 `scripts/scaffold-selftest.sh` (CI: `Template self-test`) generates a
 throwaway service with `new-service.sh` and proves both sensors red then green,
-and that the generated packaging files carry no placeholder.
+that the generated packaging files carry no placeholder, and that guide_lint is
+clean on the WHOLE scaffold (the skeleton `.claude/rules` and `.claude/skills`
+included: they name service paths the scaffold has not created yet, and other
+repos' worked examples, in words, never as backticked paths).
 
 These files (the outbox, MCP, Kafka-acks, dead-letter, writer-topic, runtime
 and root-layout sensors) are template-owned starting points, NOT in

@@ -46,7 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: python3 scripts/harness/guide_lint.py
+      - run: python3 scripts/harness/repo_lint.py
       - run: python3 scripts/harness/test_hook.py
+      - run: python3 scripts/harness/test_red_issue.py
+      - run: python3 scripts/harness/test_repo_lint.py
 
 
   # Complexity gate as its own named check: cyclomatic (gocyclo, cyclop),
@@ -130,8 +133,9 @@ jobs:
           go vet ./...
 
       # Coverage scope and gate live ONLY in the Makefile (gap 16d: a copy of
-      # the package set here drifted from `make coverage`). repo_lint R11
-      # (guide-lint job) fails the PR if a workflow defines its own -coverpkg.
+      # the package set here drifted from `make coverage`). repo_lint R11 runs
+      # in the guide-lint job (advisory, continue-on-error, like that job) and
+      # reports any workflow step that defines its own -coverpkg.
       - name: Unit tests with coverage + gate (make coverage)
         run: make coverage
 

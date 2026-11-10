@@ -12,8 +12,9 @@
 #   6. the agent-authority sensors (MCP tool / A2A skill levels, resource+prompt surface) skip on a
 #      scaffold with no adapter and go red then green on a minimal adapter;
 #   7. CLAUDE.md is rendered from CLAUDE.md.template (no placeholder left, the CloudEvents rule only for a
-#      Kafka service), AGENTS.md is a symlink to it, repo_lint R12 and guide_lint are clean on it, and a
-#      re-run of new-service.sh never overwrites it.
+#      Kafka service), AGENTS.md is a symlink to it, repo_lint R12 is clean on it, guide_lint is clean on the
+#      WHOLE scaffold (every skeleton rule and skill too) and goes red on a missing path, the guide-lint CI job
+#      runs repo_lint (R11's home), and a re-run of new-service.sh never overwrites CLAUDE.md.
 #
 # Offline: it uses the two-argument form of new-service.sh for the sensor cases
 # (no CloudEvents helper, so no `go get`) and only greps the generated helper in
@@ -78,12 +79,35 @@ expect_guide() {
   local rl gl
   rl="$(cd "$d" && python3 scripts/harness/repo_lint.py 2>&1 || true)"   # red by design elsewhere; R12 must be clean
   if grep -F '[R12]' <<<"$rl"; then fail "$repo: repo_lint R12 flags the fresh scaffold's harness files"; fi
-  gl="$(cd "$d" && python3 scripts/harness/guide_lint.py 2>&1 || true)"  # skills/rules skeletons cite future paths
-  if grep -E '^(error|warning): CLAUDE\.md:' <<<"$gl"; then fail "$repo: guide_lint flags the generated CLAUDE.md"; fi
-  echo "$repo: CLAUDE.md rendered ($kind), AGENTS.md -> CLAUDE.md, R12 clean, guide_lint clean on CLAUDE.md"
+  # The WHOLE scaffold's guides (CLAUDE.md, every .claude/rules and .claude/skills skeleton) must be guide_lint
+  # clean: a skeleton citing a service path the scaffold has not created yet (`internal/domain/`, a worked example
+  # from another repo) is a red guide-lint job on the new repo's first PR. Name planned paths in words.
+  if ! gl="$(cd "$d" && python3 scripts/harness/guide_lint.py 2>&1)"; then
+    echo "$gl"; fail "$repo: guide_lint is not clean on the fresh scaffold (skeleton skills/rules included)"
+  fi
+  echo "$repo: CLAUDE.md rendered ($kind), AGENTS.md -> CLAUDE.md, R12 clean, guide_lint clean on the whole scaffold"
 }
 
 expect_guide "$dest" nokafka
+
+step "guide_lint bites on the scaffold: a skeleton skill citing a missing path is red, green once named in words"
+probe=.claude/skills/how-to-test/SKILL.md
+cp "$probe" "$work/probe.md"
+printf '\nRead `internal/selftest/nowhere.go` first.\n' >>"$probe"
+if gl="$(python3 scripts/harness/guide_lint.py 2>&1)"; then echo "$gl"; fail "guide_lint passed a skill citing a missing path"; fi
+grep -qF 'internal/selftest/nowhere.go' <<<"$gl" || { echo "$gl"; fail "guide_lint failed without naming the missing path"; }
+cp "$work/probe.md" "$probe"
+python3 scripts/harness/guide_lint.py >/dev/null || fail "guide_lint did not go green again after the probe was removed"
+mkdir -p docs/docs/adr && printf '# 0001\n' >docs/docs/adr/0001-record-architecture-decisions.md
+gl="$(python3 scripts/harness/guide_lint.py 2>&1)" || { echo "$gl"; fail "after the first ADR, guide_lint flags an ADR number a skeleton borrowed from another repo"; }
+rm -r docs/docs
+echo "red on the probe, green after; clean once the service has its first ADR"
+
+# The coverage-scope comment in the test job says repo_lint R11 runs in the guide-lint job: it must.
+gl_job="$(awk '/^  guide-lint:/{f=1;next} f&&/^  [A-Za-z0-9_-]+:/{f=0} f' .github/workflows/ci.yml)"
+for s in repo_lint.py test_repo_lint.py; do
+  grep -qF "python3 scripts/harness/$s" <<<"$gl_job" || fail "the scaffold's guide-lint job does not run $s (R11 claim)"
+done
 cp CLAUDE.md "$work/claude-first.md"
 bash scripts/new-service.sh selftest stock >"$work/new-service-rerun.log" 2>&1 || { cat "$work/new-service-rerun.log"; fail "re-running new-service.sh failed"; }
 cmp -s CLAUDE.md "$work/claude-first.md" || fail "re-running new-service.sh overwrote the service's CLAUDE.md"

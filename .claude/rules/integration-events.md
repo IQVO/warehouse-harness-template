@@ -29,7 +29,7 @@ not a preference — there is nothing to "choose" here:
   `TestNoEventEnvelopeToggleOrFlatEnvelope` fails CI on any of them.
 - Build/validate/(un)marshal with `github.com/cloudevents/sdk-go/v2/event`
   (latest v2) via ONE helper package,
-  `internal/adapters/kafka/cloudevents/` — copy it from this template's
+  internal/adapters/kafka/cloudevents/ — copy it from this template's
   `templates/cloudevents/cloudevents.go.tmpl` (+ its test) and change only
   the per-repo constants. Transport stays `segmentio/kafka-go` (no sdk-go
   protocol/client packages, no hand-rolled CloudEvent structs).
@@ -63,9 +63,9 @@ not a preference — there is nothing to "choose" here:
   consumer; Kafka integration tests via testcontainers only.
 
 Full standard, subdomain table and the fleet's cross-service type
-catalogue: warehouse-docs `docs/strategic-design/event-standard-cloudevents.md`.
+catalogue: warehouse-docs docs/strategic-design/event-standard-cloudevents.md.
 Record it in this repo as its own ADR "CloudEvents 1.0 as the mandatory
-event envelope" under `docs/docs/adr/`.
+event envelope" under docs/docs/adr/.
 
 ### Published types
 
