@@ -1,10 +1,7 @@
 # SPEC.md — warehouse-harness-template
 
-(Intended as CLAUDE.md, but that filename is protected in this
-environment and requires the user's own manual creation/edit — see this
-repo's own harness lesson about the protected-agent-filename write guard.
-Please rename this file to CLAUDE.md, and symlink AGENTS.md -> CLAUDE.md
-to match the fleet's convention, at your convenience.)
+(The agent entry point is now `CLAUDE.md`, with `AGENTS.md` a symlink to it;
+this file stays as the longer design note.)
 
 This repo is `harness-template: v2` for the warehouse-systems fleet's Go
 bounded-context services. It is a TEMPLATE, not a runnable service: no

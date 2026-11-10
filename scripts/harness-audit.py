@@ -27,41 +27,68 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_REPOS = [
-    # warehouse fleet
-    "inventory-storage",
-    "order-management",
-    "wes-work-planning",
-    "fulfillment-execution",
-    "workforce-management",
-    "facility-layout",
-    "labor-performance",
-    "process-path-management",
-    "warehouse-ops-agent",
-    "network-fulfillment",
-    "warehouse-planning",
-    "slotting-optimization",
-    "pick-face-replenishment",
-    "product-master",
-    "inbound-receiving",
-    "returns-processing",
+    # Every non-archived IQVO repository except `.github` (the org profile). A static list: add a new repo here
+    # when it is created, or it is silently never audited. Refresh with
+    #   gh repo list IQVO --no-archived --limit 200 --json name -q '.[].name' | grep -vx .github | sort
+    "checkout",
+    "customer-ordering",
+    "customer-payments",
+    "delivery-promise",
+    "dock-scheduling",
+    "e2e-tests",
+    "ecosystem",
     "exception-management",
-    # retail network
+    "facility-layout",
+    "fulfillment-execution",
+    "inbound-receiving",
+    "inventory-storage",
+    "labor-performance",
+    "landing-page",
+    "last-mile-delivery",
+    "linehaul-transportation",
+    "network-fulfillment",
+    "network-inventory-planning",
+    "node-performance",
     "node-topology",
     "offer-availability",
-    "delivery-promise",
-    "customer-ordering",
+    "order-management",
     "order-sourcing",
-    "vendor-connectivity",
-    "linehaul-transportation",
-    "last-mile-delivery",
+    "outbound-shipping",
+    "payment-provider-simulator",
+    "pick-face-replenishment",
+    "pricing",
+    "process-path-management",
+    "product-content",
+    "product-discovery",
+    "product-master",
+    "provisioning",
+    "returns-processing",
+    "seller-inbound",
     "shipping-and-tracking",
-    "node-performance",
+    "shopping-cart",
+    "slotting-optimization",
+    "storefront-bff",
+    "storefront-web",
+    "task-interleaving",
+    "vendor-connectivity",
+    "warehouse-console",
+    "warehouse-docs",
+    "warehouse-floor-client",
+    "warehouse-harness-template",
+    "warehouse-infra",
+    "warehouse-ops-agent",
+    "warehouse-planning",
+    "warehouse-ui-kit",
+    "wes-work-planning",
+    "workforce-management",
+    "yard-management",
 ]
 
 CATEGORY_MAINTAINABILITY = "maintainability"
@@ -74,8 +101,9 @@ class ManifestItem:
     name: str
     category: str
     # kind: "ci_job" checks .github/workflows/ci.yml for a top-level job
-    # key; "file" checks a file exists (git ls-tree); "file_glob" checks
-    # at least one file matches a prefix.
+    # key; "file" checks a file exists (git ls-tree; a symlink counts);
+    # "file_glob" checks at least one file matches a prefix; "guide_symlink"
+    # checks AGENTS.md is a symlink to CLAUDE.md or CLAUDE.md to AGENTS.md.
     kind: str
     target: str
     # Only meaningful for ci_job: some sensors are legitimately absent in
@@ -102,6 +130,11 @@ MANIFEST: list[ManifestItem] = [
     ManifestItem(".golangci.yml", CATEGORY_MAINTAINABILITY, "file", ".golangci.yml"),
     # --- maintainability: guides (feedforward) ---
     ManifestItem("AGENTS.md/CLAUDE.md", CATEGORY_MAINTAINABILITY, "file", "AGENTS.md"),
+    ManifestItem("CLAUDE.md", CATEGORY_MAINTAINABILITY, "file", "CLAUDE.md"),
+    # one real guide: AGENTS.md -> CLAUDE.md (or the reverse); two regular files drift apart (repo_lint R12)
+    ManifestItem("AGENTS.md symlink", CATEGORY_MAINTAINABILITY, "guide_symlink", "AGENTS.md"),
+    ManifestItem("INCIDENTS.md", CATEGORY_MAINTAINABILITY, "file", "INCIDENTS.md"),
+    ManifestItem("HARNESS.md", CATEGORY_MAINTAINABILITY, "file", "HARNESS.md"),
     ManifestItem(".claude/rules/", CATEGORY_MAINTAINABILITY, "file_glob", ".claude/rules/"),
     ManifestItem(".claude/skills/", CATEGORY_MAINTAINABILITY, "file_glob", ".claude/skills/"),
     # --- architecture fitness ---
@@ -152,14 +185,35 @@ def repo_ci_jobs(repo: Path, ref: str = "origin/develop") -> set[str]:
     return jobs
 
 
+def repo_symlinks(repo: Path, ref: str = "origin/develop") -> dict[str, str]:
+    """{path: link target} for the guide files committed as symlinks (git mode 120000)."""
+    out = run(["git", "-C", str(repo), "ls-tree", ref, "--", "AGENTS.md", "CLAUDE.md"])
+    links = {}
+    for line in out.splitlines():
+        meta, _, path = line.partition("\t")
+        if meta.startswith("120000 "):
+            links[path] = run(["git", "-C", str(repo), "show", f"{ref}:{path}"]).strip()
+    return links
+
+
+def guide_is_symlinked(links: dict[str, str], files: set[str]) -> bool:
+    """One real guide: AGENTS.md -> CLAUDE.md (CLAUDE.md a real file), or the reverse."""
+    return any(links.get(a) == b and b in files and b not in links
+               for a, b in (("AGENTS.md", "CLAUDE.md"), ("CLAUDE.md", "AGENTS.md")))
+
+
 def harness_template_version(repo: Path, ref: str = "origin/develop") -> str | None:
-    content = run(["git", "-C", str(repo), "show", f"{ref}:AGENTS.md"])
-    if not content:
-        content = run(["git", "-C", str(repo), "show", f"{ref}:CLAUDE.md"])
-    for line in content.splitlines():
-        if "harness-template" in line:
-            return line.strip()
-    return None
+    # `git show` of a symlink prints its TARGET ("CLAUDE.md"), not the guide: read the real file.
+    links = repo_symlinks(repo, ref)
+    content = ""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        if name not in links:
+            content = run(["git", "-C", str(repo), "show", f"{ref}:{name}"])
+            if content:
+                break
+    # the same marker repo_lint R12 requires; a mention such as the scoped-rules comment is not a version
+    m = re.search(r"harness-template:\s*(v\d+)\b", content)
+    return f"harness-template: {m.group(1)}" if m else None
 
 
 @dataclass
@@ -172,15 +226,25 @@ class RepoAudit:
     harness_version: str | None = None
 
 
+def default_ref(repo: Path) -> str:
+    """origin/develop (GitFlow repos); repos that have no develop (warehouse-docs uses main) fall back to origin/main."""
+    for ref in ("origin/develop", "origin/main"):
+        if run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref]).strip():
+            return ref
+    return "origin/develop"
+
+
 def audit_repo(repo: Path) -> RepoAudit:
-    files = repo_file_list(repo)
+    ref = default_ref(repo)
+    files = repo_file_list(repo, ref)
     file_set = set(files)
-    ci_jobs = repo_ci_jobs(repo)
+    ci_jobs = repo_ci_jobs(repo, ref)
+    links = repo_symlinks(repo, ref)
     has_web = any(f.startswith("web/") for f in files)
     has_chart = any(f.startswith("charts/") and f.endswith("Chart.yaml") for f in files)
 
     audit = RepoAudit(name=repo.name)
-    audit.harness_version = harness_template_version(repo)
+    audit.harness_version = harness_template_version(repo, ref)
 
     category_counts: dict[str, list[int]] = {}  # category -> [present, total]
 
@@ -198,6 +262,8 @@ def audit_repo(repo: Path) -> RepoAudit:
             found = item.target in file_set
         elif item.kind == "file_glob":
             found = any(f.startswith(item.target) for f in files)
+        elif item.kind == "guide_symlink":
+            found = guide_is_symlinked(links, file_set)
         else:
             found = False
 

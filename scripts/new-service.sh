@@ -59,7 +59,8 @@
 #
 # After running this script:
 #   1. grep -rn '{{' .   -- confirm zero remaining placeholders except the
-#      two documented above ({{MEASURED_*}} in .gremlins.yaml).
+#      two documented above ({{MEASURED_*}} in .gremlins.yaml). CLAUDE.md has
+#      none; its only open markers are the documented "FILL IN" ones.
 #   2. Fill in .claude/rules/*.md for real once the domain exists.
 #   3. Write real domain/application/adapters code, then:
 #        go mod init github.com/IQVO/<repo>
@@ -67,9 +68,12 @@
 #        go test ./internal/architecture/... -v   # should PASS trivially on an empty tree
 #   4. make mutation-full, read the measured efficacy/mutant-coverage,
 #      set .gremlins.yaml's thresholds strictly BELOW those numbers.
-#   5. Record "harness-template: v4" in this repo's AGENTS.md, and (Kafka
-#      services) the "Events: CloudEvents 1.0 is MANDATORY" section from
-#      .claude/rules/integration-events.md in its CLAUDE.md/AGENTS.md.
+#   5. Fill in CLAUDE.md's "FILL IN" markers. CLAUDE.md is GENERATED from
+#      CLAUDE.md.template (identity, hard rules incl. the hexagonal rule, the
+#      "CloudEvents 1.0 is MANDATORY" rule for Kafka services, no-auth rule,
+#      commands, where things are written down, `harness-template: v4`, the
+#      scoped-rules block) and AGENTS.md is created as a symlink to it; never
+#      make AGENTS.md a second regular file (repo_lint R12 fails that).
 #   6. lefthook install
 #   7. Work through docs/before-first-release.md (generated) BEFORE the first
 #      develop -> main PR: Dockerfile/.dockerignore are already generated, the
@@ -211,6 +215,35 @@ if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
   gofmt -w "${ce_dir}" 2>/dev/null || true
 else
   echo "  no <event-subdomain>/<event-context>: skipping CloudEvents helper (service has no Kafka I/O)"
+fi
+
+# Agent guide (fleet-mandatory, repo_lint R12): CLAUDE.md is rendered from CLAUDE.md.template and
+# AGENTS.md is a symlink to it, so a scaffold can never start without a guide. Before this, the script
+# only TOLD a human to write one and 14 services never got a CLAUDE.md/AGENTS.md. The copy of the
+# template carries the TEMPLATE's own CLAUDE.md: it is replaced, and CLAUDE.md.template is consumed, so
+# re-running this script never overwrites a guide the service has since filled in.
+if [[ -f CLAUDE.md.template ]]; then
+  if [[ -n "${EVENT_SUBDOMAIN}" ]]; then
+    kafka_sed=(-e '/^<!-- kafka:start -->$/d' -e '/^<!-- kafka:end -->$/d')
+  else
+    kafka_sed=(-e '/^<!-- kafka:start -->$/,/^<!-- kafka:end -->$/d')
+  fi
+  rm -f CLAUDE.md AGENTS.md
+  sed \
+    -e '/^<!-- TEMPLATE-HEADER/,/-->$/d' \
+    "${kafka_sed[@]}" \
+    -e "s|{{SERVICE_REPO}}|${SERVICE_REPO}|g" \
+    -e "s|{{SERVICE}}|${SERVICE}|g" \
+    -e "s|{{RICHEST_AGGREGATE}}|${RICHEST_AGGREGATE}|g" \
+    -e "s|{{EVENT_NAMESPACE}}|${EVENT_NAMESPACE}|g" \
+    -e "s|{{EVENT_SUBDOMAIN}}|${EVENT_SUBDOMAIN}|g" \
+    -e "s|{{EVENT_CONTEXT}}|${EVENT_CONTEXT}|g" \
+    CLAUDE.md.template > CLAUDE.md
+  rm CLAUDE.md.template
+  ln -s CLAUDE.md AGENTS.md
+  echo "  generated CLAUDE.md (from CLAUDE.md.template; fill in its FILL IN markers) + AGENTS.md -> CLAUDE.md"
+elif [[ ! -e CLAUDE.md ]]; then
+  echo "::warning:: CLAUDE.md.template not found and no CLAUDE.md: this scaffold has no agent guide (repo_lint R12)"
 fi
 
 # Packaging (fleet-mandatory before the first release): the Dockerfile and

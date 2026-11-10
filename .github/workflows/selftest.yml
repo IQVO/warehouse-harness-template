@@ -23,8 +23,10 @@ jobs:
           go-version-file: go.mod
       - name: Hook tests (block/feedback rules, all three runtimes share this logic)
         run: python3 scripts/harness/test_hook.py
-      - name: Config sensors (repo_lint) tests
-        run: python3 scripts/harness/test_repo_lint.py
+      - name: Config sensors (repo_lint) tests, plus repo_lint on the template itself (template mode, incl. R12)
+        run: |
+          python3 scripts/harness/test_repo_lint.py
+          python3 scripts/harness/repo_lint.py
       - name: Guide sensor (guide_lint) on the template's own guides, plus its template-mode tests
         run: |
           python3 scripts/harness/guide_lint.py
@@ -57,3 +59,7 @@ jobs:
           python3 tools/migrate_v3.py --repo "$t" --template "$PWD"
           python3 tools/migrate_v3.py --repo "$t" --template "$PWD" --dry-run | tee "$t/second.log"
           test -f "$t/scripts/harness/hook.py" && test -f "$t/.claude/settings.json"
+          python3 tools/migrate_v4.py --repo "$t" --template "$PWD"
+          cmp INCIDENTS.md "$t/INCIDENTS.md"   # the fleet incident log is template-managed (byte-identical)
+          python3 tools/migrate_v4.py --repo "$t" --template "$PWD" --dry-run | tee "$t/second-v4.log"
+          if grep -q 'INCIDENTS.md' "$t/second-v4.log"; then echo "migrate_v4 is not idempotent on INCIDENTS.md"; exit 1; fi
