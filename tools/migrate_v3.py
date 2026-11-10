@@ -75,6 +75,9 @@ GS1_PACKAGE = [
     "internal/domain/shared/gs1/checksum_test.go",
 ]
 SYMLINKS = {".agents/skills": "../.claude/skills"}
+# Fleet rules whose content depends on the event namespace (warehouse vs retailnetwork). The template's copy is the
+# warehouse one, so a retail-network repo keeps its own (see Migrator.retailnetwork).
+NAMESPACE_RULES = [".claude/rules/fleet/cloudevents.md"]
 
 SKILL_META = {
     "how-to-add-a-rest-endpoint": (
@@ -284,6 +287,14 @@ class Migrator:
             fleet = os.path.join(self.template, ".claude/rules/fleet")
             if os.path.isdir(fleet):
                 rels += [".claude/rules/fleet/" + f for f in sorted(os.listdir(fleet)) if f.endswith(".md")]
+            if self.retailnetwork():
+                # This template carries the WAREHOUSE set only. A retail-network repo's CloudEvents rule is its own
+                # namespace variant (canonical: warehouse-docs agents/retailnetwork/, checked by fleet_drift.py);
+                # syncing the warehouse copy over it would rewrite 19 repos' event-type rule to com.warehouse.*.
+                for rel in NAMESPACE_RULES:
+                    if rel in rels:
+                        rels.remove(rel)
+                        self.say(f"kept (retailnetwork namespace, not template-managed here): {rel}")
         else:
             rels = [r for r in rels if not r.startswith("internal/")]
         for rel in rels:
@@ -305,6 +316,19 @@ class Migrator:
                 if not self.dry:
                     os.makedirs(os.path.dirname(self.p(link)), exist_ok=True)
                     os.symlink(target, self.p(link))
+
+    def retailnetwork(self):
+        """True when the repo is in the retail-network event namespace (its own CloudEvents rule or contracts say so)."""
+        rule = self.p(".claude", "rules", "fleet", "cloudevents.md")
+        if os.path.isfile(rule):
+            return "com.retailnetwork." in self.read(".claude/rules/fleet/cloudevents.md")
+        apis = self.p("apis")
+        if os.path.isdir(apis):
+            for f in sorted(os.listdir(apis)):
+                if f.startswith("asyncapi") and os.path.isfile(os.path.join(apis, f)):
+                    if "com.retailnetwork." in self.read(f"apis/{f}"):
+                        return True
+        return False
 
     # 4b --------------------------------------------------------------------
     def gs1_package(self):
