@@ -39,6 +39,7 @@ python3 scripts/harness/test_repo_lint.py && python3 scripts/harness/repo_lint.p
 python3 scripts/harness/guide_lint.py && python3 scripts/harness/test_guide_lint.py
 python3 scripts/harness/test_fleet_drift.py
 python3 tools/test_migrate_gs1.py && go test ./internal/domain/shared/gs1/ -race -count=1
+python3 tools/test_harness_sync.py      # scoped-rules block (both profiles, migrate_v4), health drift lists
 python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
 go vet ./internal/architecture/ && go test ./internal/architecture/
 bash scripts/scaffold-selftest.sh      # new-service.sh output; sensors red then green

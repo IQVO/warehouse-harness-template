@@ -19,6 +19,8 @@ v4 closes the three gaps found comparing this harness against Google-Research's 
                 way v3 wired test_hook.py and test_repo_lint.py.
   3c. INCIDENTS.md: the fleet incident log is template-managed (byte-copied like the subagents): one canonical
                 file, edited in the template first, so the weekly sync keeps every copy identical.
+  3d. CLAUDE.md scoped-rules block: regenerated from the rules that declare `paths:` (same block and code as
+                migrate_v3, read-only scan, works for Go and non-Go repos), so a v4-only run repairs an empty table.
   4. version marker: every repo should say which harness-template version it's on in one place a fleet
                 audit can grep for. v3 rollout left this inconsistent (some repos never got a plain-text
                 marker, only the generated scoped-rules HTML comment). v4 normalizes it.
@@ -152,6 +154,7 @@ class MigratorV4(v3.Migrator):
     def run(self):
         self.managed_v4()
         self.memory()
+        self.claude_md(self.scoped_rules())
         self.version_marker()
         self.harness_test_target()
         self.ci_v4()
