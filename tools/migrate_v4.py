@@ -17,6 +17,8 @@ v4 closes the three gaps found comparing this harness against Google-Research's 
   3. red_issue.py --draft (+ its test): already MANAGED by v3's copy mechanism, this just adds the new test
                 file to that list and wires it into `make harness-test` / the `guide-lint` CI job, the same
                 way v3 wired test_hook.py and test_repo_lint.py.
+  3c. INCIDENTS.md: the fleet incident log is template-managed (byte-copied like the subagents): one canonical
+                file, edited in the template first, so the weekly sync keeps every copy identical.
   4. version marker: every repo should say which harness-template version it's on in one place a fleet
                 audit can grep for. v3 rollout left this inconsistent (some repos never got a plain-text
                 marker, only the generated scoped-rules HTML comment). v4 normalizes it.
@@ -46,6 +48,8 @@ V4_MANAGED = [
     "scripts/harness/red_issue.py",        # also in v3.MANAGED, but re-listed here so migrate_v4 alone
                                             # (without re-running migrate_v3) still picks up --draft.
     "scripts/harness/test_red_issue.py",
+    "INCIDENTS.md",                         # the fleet-shared incident log: ONE file, byte-identical everywhere. It was
+                                            # never managed before and forked into 8 variants; add rows HERE first.
 ]
 VERSION_RX = re.compile(
     r"harness-template:?\s*v[234]\b(?:\s+is in effect)?|Scaffolded from `warehouse-harness-template`"

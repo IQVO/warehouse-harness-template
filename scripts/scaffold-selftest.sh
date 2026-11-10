@@ -10,7 +10,10 @@
 #   4. TestNoGoFilesAtRepoRoot goes red on a .go file at the root and green once it is gone;
 #   5. a cmd/ directory with no binary is an error, not a silent pass;
 #   6. the agent-authority sensors (MCP tool / A2A skill levels, resource+prompt surface) skip on a
-#      scaffold with no adapter and go red then green on a minimal adapter.
+#      scaffold with no adapter and go red then green on a minimal adapter;
+#   7. CLAUDE.md is rendered from CLAUDE.md.template (no placeholder left, the CloudEvents rule only for a
+#      Kafka service), AGENTS.md is a symlink to it, repo_lint R12 and guide_lint are clean on it, and a
+#      re-run of new-service.sh never overwrites it.
 #
 # Offline: it uses the two-argument form of new-service.sh for the sensor cases
 # (no CloudEvents helper, so no `go get`) and only greps the generated helper in
@@ -52,6 +55,40 @@ grep -E 'generated|kept|substituted' "$work/new-service.log"
 [[ ! -e .github/workflows/selftest.yml ]] || fail "a scaffold must not keep the template-only selftest.yml"
 python3 scripts/harness/repo_lint.py >"$work/repo-lint.log" 2>&1 || true   # a fresh scaffold is red by design (no web/, MEASURED_* placeholders)
 if grep -q 'selftest.yml' "$work/repo-lint.log"; then cat "$work/repo-lint.log"; fail "repo_lint flags selftest.yml on a fresh scaffold"; fi
+# expect_guide <dir> <kafka|nokafka>: CLAUDE.md is rendered from CLAUDE.md.template and AGENTS.md links to it
+expect_guide() {
+  local d="$1" kind="$2" repo
+  repo="$(basename "$1")"
+  [[ -f "$d/CLAUDE.md" && ! -L "$d/CLAUDE.md" ]] || fail "$repo: new-service.sh did not render CLAUDE.md as a regular file"
+  [[ -L "$d/AGENTS.md" && "$(readlink "$d/AGENTS.md")" == "CLAUDE.md" ]] || fail "$repo: AGENTS.md is not a symlink to CLAUDE.md"
+  [[ ! -e "$d/CLAUDE.md.template" ]] || fail "$repo: the scaffold still carries the template-only CLAUDE.md.template"
+  if grep -n '{{\|kafka:start\|kafka:end\|TEMPLATE-HEADER' "$d/CLAUDE.md"; then
+    fail "$repo: a placeholder or template marker is left in CLAUDE.md (only the documented FILL IN markers may stay)"
+  fi
+  grep -qx "# CLAUDE.md — ${repo}" "$d/CLAUDE.md" || fail "$repo: CLAUDE.md is not this service's guide (template's own guide copied?)"
+  grep -qx 'harness-template: v4' "$d/CLAUDE.md" || fail "$repo: CLAUDE.md has no harness-template: v4 marker"
+  grep -q 'Hexagonal dependency rule' "$d/CLAUDE.md" || fail "$repo: CLAUDE.md lost the hexagonal rule"
+  grep -q 'No auth layer on REST or MCP' "$d/CLAUDE.md" || fail "$repo: CLAUDE.md lost the no-auth rule"
+  grep -q 'harness:scoped-rules:start' "$d/CLAUDE.md" || fail "$repo: CLAUDE.md has no scoped-rules block"
+  if [[ "$kind" == "kafka" ]]; then
+    grep -q 'CloudEvents 1.0 is MANDATORY' "$d/CLAUDE.md" || fail "$repo: a Kafka scaffold's CLAUDE.md has no CloudEvents MANDATORY rule"
+  elif grep -q 'CloudEvents 1.0 is MANDATORY' "$d/CLAUDE.md"; then
+    fail "$repo: a scaffold without Kafka I/O got the CloudEvents rule"
+  fi
+  local rl gl
+  rl="$(cd "$d" && python3 scripts/harness/repo_lint.py 2>&1 || true)"   # red by design elsewhere; R12 must be clean
+  if grep -F '[R12]' <<<"$rl"; then fail "$repo: repo_lint R12 flags the fresh scaffold's harness files"; fi
+  gl="$(cd "$d" && python3 scripts/harness/guide_lint.py 2>&1 || true)"  # skills/rules skeletons cite future paths
+  if grep -E '^(error|warning): CLAUDE\.md:' <<<"$gl"; then fail "$repo: guide_lint flags the generated CLAUDE.md"; fi
+  echo "$repo: CLAUDE.md rendered ($kind), AGENTS.md -> CLAUDE.md, R12 clean, guide_lint clean on CLAUDE.md"
+}
+
+expect_guide "$dest" nokafka
+cp CLAUDE.md "$work/claude-first.md"
+bash scripts/new-service.sh selftest stock >"$work/new-service-rerun.log" 2>&1 || { cat "$work/new-service-rerun.log"; fail "re-running new-service.sh failed"; }
+cmp -s CLAUDE.md "$work/claude-first.md" || fail "re-running new-service.sh overwrote the service's CLAUDE.md"
+[[ -L AGENTS.md ]] || fail "re-running new-service.sh broke the AGENTS.md symlink"
+
 [[ ! -e internal/domain/shared/gs1 ]] || fail "a default scaffold must not carry internal/domain/shared/gs1"
 [[ ! -e internal/domain ]] || fail "dropping gs1 must leave no empty internal/domain behind"
 
@@ -214,6 +251,9 @@ grep -q 'Subdomain = "wms"' "$wh_ce" || fail "warehouse scaffold: the constant i
 if grep -rn '{{' "$wh_dest/internal/adapters/kafka/cloudevents/"; then
   fail "warehouse scaffold: a placeholder is left in the CloudEvents helper"
 fi
+expect_guide "$wh_dest" kafka
+grep -qF '`com.warehouse.wms.inventory-storage.<entity>.<EventName>`' "$wh_dest/CLAUDE.md" \
+  || fail "warehouse scaffold: CLAUDE.md does not name the service's CloudEvents type prefix"
 
 step "retailnetwork namespace: the CloudEvents helper uses the network prefixes"
 rn_dest="$work/selftest-rn"
@@ -235,6 +275,9 @@ fi
 if grep -rn '{{' "$rn_ce_dir"; then
   fail "retailnetwork scaffold: a placeholder is left in the CloudEvents helper"
 fi
+expect_guide "$rn_dest" kafka
+grep -qF '`com.retailnetwork.storefront.checkout.<entity>.<EventName>`' "$rn_dest/CLAUDE.md" \
+  || fail "retailnetwork scaffold: CLAUDE.md does not name the network CloudEvents type prefix"
 
 step "retailnetwork namespace: an invalid tier is rejected with a clear error"
 bad_dest="$work/selftest-rn-bad"
@@ -248,4 +291,4 @@ grep -q 'commerce|logistics|partner|storefront' "$work/new-service-rn-bad.log" \
 [[ ! -e "$bad_dest/internal/adapters/kafka/cloudevents" ]] || fail "a rejected tier still generated the CloudEvents helper"
 
 echo
-echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green, agent-authority sensors, both CloudEvents namespaces)"
+echo "PASS: scaffold self-test (new-service.sh output, both sensors red then green, agent-authority sensors, both CloudEvents namespaces, generated CLAUDE.md + AGENTS.md symlink)"

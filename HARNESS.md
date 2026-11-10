@@ -18,7 +18,8 @@ three regulation categories: **maintainability**, **architecture fitness**,
 
 | File | Category | Purpose |
 |---|---|---|
-| `AGENTS.md` / `CLAUDE.md` | computational | Entry point every agent session reads first: repo shape, commands, conventions. |
+| `CLAUDE.md` (+ `AGENTS.md` symlink) | computational | Entry point every agent session reads first: repo shape, hard rules, commands, where things are written down, the `harness-template: v<N>` marker. ONE real file: AGENTS.md is a symlink to it (Codex/OpenCode read AGENTS.md, Claude Code CLAUDE.md). A scaffold gets it rendered from `CLAUDE.md.template` by `new-service.sh`; `repo_lint` R12 fails a repo without it. |
+| `INCIDENTS.md` | computational | The **fleet-shared** incident log: one canonical file, template-managed (`V4_MANAGED` in `tools/migrate_v4.py`) and byte-identical in every repo. Edit it HERE first, then the weekly sync copies it; never add a row in a service's copy (it is overwritten). |
 | `.claude/rules/domain-model.md` | computational | Ubiquitous language, aggregates, domain events — keeps an agent's vocabulary aligned with the real domain. |
 | `.claude/rules/rest-api.md` | computational | Route → use case mapping, error/auth conventions. |
 | `.claude/rules/integration-events.md` | computational | Kafka publish/consume contract — CloudEvents 1.0 mandatory envelope (verbatim section, copy it into CLAUDE.md/AGENTS.md too), consumer-group rules. |
@@ -266,9 +267,11 @@ e2e-tests' `dbOpen` helper for the concrete pattern).
 Run `scripts/new-service.sh <service-name> <richest-aggregate-pkg>
 [<event-subdomain> <event-context> [<event-namespace>]]` from a fresh repo
 checkout. It substitutes every `{{SERVICE}}` / `{{SERVICE_REPO}}` /
-`{{RICHEST_AGGREGATE}}` placeholder, and — for a Kafka service — generates
+`{{RICHEST_AGGREGATE}}` placeholder, renders `CLAUDE.md` from
+`CLAUDE.md.template` (its CloudEvents and outbox rules kept only for a Kafka
+service) with `AGENTS.md` as a symlink to it, — for a Kafka service — generates
 `internal/adapters/kafka/cloudevents/` from `templates/cloudevents/`, and tells
-you which files still need manual content (the `.claude/rules/*.md` skeletons,
+you which files still need manual content (CLAUDE.md's `FILL IN` markers, the `.claude/rules/*.md` skeletons,
 `.gremlins.yaml`'s measured thresholds). The event namespace selects the
 CloudEvents shape:
 
@@ -353,6 +356,8 @@ Template tooling that must NOT be copied into an instantiated service: `tools/` 
 `scripts/harness-health.py`, `scripts/new-service.sh`.
 Run `python3 tools/migrate_v3.py --repo <path>` then `python3 tools/migrate_v4.py --repo <path>` to (re)apply the
 managed files to an existing service; both are idempotent and together are the engine of the weekly template sync.
+`INCIDENTS.md` is one of those managed files (`V4_MANAGED`): it is fleet-shared, edited in this repository first, and
+byte-copied to every repo, so the copies can no longer fork (they had drifted into 8 variants before it was managed).
 
 ## Config sensors (`repo_lint`) and the incident protocol
 
@@ -367,7 +372,9 @@ gated off PRs), **R9** a chart test (`charts/<c>/tests/*.sh`, `test_*.py`) that 
 references (`envFrom.configMapRef`, `configMapKeyRef`, `configMap` volume), **R11** a coverage package set defined
 outside the Makefile (a workflow `run:` line passing `-coverpkg` itself) or a Makefile `coverage` gate that no workflow
 runs (directly or through a target that has `coverage` as a prerequisite; in this repository `ci.yml.template` counts
-as a workflow). `# repo-lint: ignore` suppresses one line
+as a workflow), **R12** harness files: `CLAUDE.md` and `AGENTS.md` both exist and one is a symlink to the other (two
+regular files drift), `INCIDENTS.md` and `HARNESS.md` exist, and the real guide carries a `harness-template: v<N>`
+marker; in this template repository it checks the template's own files plus `CLAUDE.md.template`. `# repo-lint: ignore` suppresses one line
 (say why; for R9 put it in the first lines of the test, for R10 on the ConfigMap's `kind:` line). Tests:
 `scripts/harness/test_repo_lint.py`; the cases named `incident` are the real incidents and must keep failing the lint.
 `ci.yml.template` ships the matching `chart-tests` job (every chart test, PyYAML installed hash-pinned from
@@ -386,9 +393,10 @@ subagents for the three review skills, `.claude/memory/MEMORY.md`, `red_issue.py
 drafting incident paperwork automatically, `tools/harness_probe.py`'s Propose-Probe-Compose
 loop, and `benchmarks/wms-bench/` — see "Harness² comparison (v4)" below. Builds on v3 = agent
 runtime harness: loadable skills, hooks for Claude Code / Codex / OpenCode, guide-lint,
-red-issue loop; which built on v2 = CloudEvents 1.0 mandatory). Record `harness-template: v4`
-in each instantiated repo's `AGENTS.md` (automated by `tools/migrate_v4.py`'s version-marker
-step) so a fleet-wide audit (see `scripts/harness-audit.py` / `scripts/harness-health.py`) can
+red-issue loop; which built on v2 = CloudEvents 1.0 mandatory). Every instantiated repo records `harness-template: v4`
+in its guide (`CLAUDE.md`, which `AGENTS.md` links to; written by `CLAUDE.md.template` for a new
+scaffold and by `tools/migrate_v4.py`'s version-marker step for an existing repo, and enforced by
+`repo_lint` R12) so a fleet-wide audit (see `scripts/harness-audit.py` / `scripts/harness-health.py`) can
 tell which repos are behind the template and by how much.
 
 ## Harness² comparison (v4)

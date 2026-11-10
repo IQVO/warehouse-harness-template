@@ -1,0 +1,87 @@
+<!-- TEMPLATE-HEADER (deleted by scripts/new-service.sh)
+     CLAUDE.md.template: the agent guide every scaffold starts with. scripts/new-service.sh renders it to
+     CLAUDE.md (the real file) and creates the AGENTS.md -> CLAUDE.md symlink, so no service can start without
+     a guide again (repo_lint R12 fails a repo that lacks either, or whose two names are separate files).
+     Substituted: {{SERVICE_REPO}}, {{SERVICE}}, {{RICHEST_AGGREGATE}}, {{EVENT_NAMESPACE}}, {{EVENT_SUBDOMAIN}},
+     {{EVENT_CONTEXT}}. The kafka:start/kafka:end block is kept (markers dropped) only when the event
+     arguments are given, deleted otherwise. Every "FILL IN" marker is left for the first real commit: it
+     is per-repo knowledge the script cannot know. Cite only paths a FRESH scaffold has (guide_lint fails
+     a missing one); name planned trees in words. Budget: <= 150 lines. -->
+# CLAUDE.md — {{SERVICE_REPO}}
+
+`{{SERVICE_REPO}}` is a bounded context of the `warehouse-systems` fleet (GitHub org `IQVO`, Go module
+github.com/IQVO/{{SERVICE_REPO}}, scaffolded from warehouse-harness-template). FILL IN: its strategic
+classification (Core / Supporting / Generic) and tier, the one question it answers, what it explicitly does
+NOT own, its richest aggregate (package `{{RICHEST_AGGREGATE}}`) and the binaries it ships under cmd/.
+
+## Hard rules (each one cost an incident or is fitness-tested)
+
+1. **Hexagonal dependency rule.** The domain layer (internal/domain) depends on nothing internal but domain;
+   the application layer only on domain and application; inbound and outbound adapters never depend on each
+   other; only cmd/ wires layers. No JSON tags, SQL or HTTP types in the domain. `make arch-test` enforces it
+   (`internal/architecture/architecture_test.go`).
+2. **Real infrastructure at runtime.** A cmd/ binary never imports the in-memory adapters (test doubles only;
+   the fleet runs on real Postgres and Kafka): `TestRuntimeBinaryHasNoInMemoryAdapters`. No `.go` file at the
+   module root (`TestNoGoFilesAtRepoRoot`); the godog runner lives in features/.
+3. **No auth layer on REST or MCP** (fleet-wide revert 2026-09-11): never add bearer/JWT/API-key middleware
+   (`TestNoAuthMiddlewareReintroduced`). Agent authority is declared per MCP tool / A2A skill instead
+   (`.claude/rules/fleet/agent-authority.md`).
+4. **No outbound calls to sibling contexts without an ADR.** Cross-context data arrives as events kept in
+   local copies (`.claude/rules/fleet/context-boundaries.md`).
+5. **An ADR comes first** for a new cross-context contract or any auth. FILL IN: the hard rules that are
+   true for THIS repo once its domain exists (each verified in code, an ADR or a fitness test); delete a
+   rule above that stops being true.
+<!-- kafka:start -->
+6. **Events: CloudEvents 1.0 is MANDATORY** on every Kafka message produced or consumed (structured mode,
+   no flat envelope, no dual-write, no dual-read, no envelope toggle; `TestNoEventEnvelopeToggleOrFlatEnvelope`).
+   Build and decode ONLY through `internal/adapters/kafka/cloudevents/` (generated from
+   `templates/cloudevents/cloudevents.go.tmpl`); `type` is
+   `com.{{EVENT_NAMESPACE}}.{{EVENT_SUBDOMAIN}}.{{EVENT_CONTEXT}}.<entity>.<EventName>`, with `source` and
+   `dataschema` exactly as that helper builds them. A breaking payload change is a new `.v2` type, never a
+   mutation. Consumers dispatch on the FULL `type`, dedupe on `id`, and skip/DLQ (never crash on) anything
+   that fails validation. Full rule: `.claude/rules/integration-events.md`.
+7. **Events leave through the transactional outbox only**: the aggregate save and the encoded CloudEvents
+   commit in one transaction; a relay publishes. Never write to Kafka from a handler or a use case.
+<!-- kafka:end -->
+
+## Commands
+
+```bash
+make check-fast   # fmt-check + vet + arch-test: run before saying "done"
+make check        # fmt-check vet build lint test
+make check-all    # check + coverage + arch-test + bdd (the full local gate)
+make integration  # real Postgres/Kafka via testcontainers (needs Docker)
+make mutation     # gremlins on the richest aggregate (thresholds in .gremlins.yaml, measured first)
+make guide-lint   # these guides: skills load, references resolve, context budget
+make harness-test # unit-test the agent hooks
+```
+
+FILL IN: how to run each binary locally (required env vars, ports).
+
+## Where things are written down (read before editing the matching area)
+
+- `.claude/rules/domain-model.md`: ubiquitous language, aggregates, events, use cases.
+  `.claude/rules/rest-api.md`: endpoints and error slugs.
+  `.claude/rules/integration-events.md`: published/consumed events and the CloudEvents rule.
+- `.claude/rules/fleet/`: fleet-wide rules copied from the harness template; never edit them here
+  (their canonical copies live in warehouse-docs, agents/fleet).
+- `HARNESS.md`: what each sensor runs and why. `INCIDENTS.md`: the fleet incident log (template-managed,
+  byte-identical in every repo; add a row in warehouse-harness-template first).
+  `.claude/memory/MEMORY.md`: this repo's own durable heuristics.
+- `docs/before-first-release.md`: packaging checklist to finish before the first develop -> main release.
+  ADRs go in docs/adr once the first decision is written.
+
+harness-template: v4
+
+<!-- harness:scoped-rules:start (generated by tools/migrate_v3.py in warehouse-harness-template; do not hand-edit) -->
+## Scoped rules and harness
+
+Claude Code loads each rule below automatically when you touch the matching paths. OpenCode and Codex do NOT: read the rule BEFORE editing matching files.
+
+| When touching | Read |
+|---|---|
+| `internal/adapters/**/kafka/**`, `internal/adapters/outbound/events/**`, `apis/asyncapi*` | `.claude/rules/integration-events.md` |
+| `internal/adapters/inbound/http/**`, `apis/openapi*.yaml`, `apis/openapi/**` | `.claude/rules/rest-api.md` |
+
+Hooks (`scripts/harness/hook.py`, wired for Claude Code, Codex and OpenCode) block pushes to develop/main, `--no-verify`, bare `rm -rf`, and edits to generated files, and feed gofmt/vet findings back after each edit. Before saying "done" run `make check-fast`; the full gate is `make check-all`. `HARNESS_OFF=1` disables the hooks when debugging the harness itself.
+<!-- harness:scoped-rules:end -->
