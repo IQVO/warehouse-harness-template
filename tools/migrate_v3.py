@@ -69,6 +69,7 @@ GS1_PACKAGE = [
     "internal/domain/shared/gs1/gln.go",
     "internal/domain/shared/gs1/sscc.go",
     "internal/domain/shared/gs1/scan.go",
+    "internal/domain/shared/gs1/scan_fields.go",
     "internal/domain/shared/gs1/check_test.go",
     "internal/domain/shared/gs1/gtin_test.go",
     "internal/domain/shared/gs1/gln_test.go",
