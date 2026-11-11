@@ -301,12 +301,29 @@ the full instantiation checklist.
 
 ## Shared domain code: the GS1 identification package
 
-`internal/domain/shared/gs1` is the one piece of **domain code** the template carries: the GTIN and
-SSCC value objects (8/12/13/14-digit GTIN normalised to 14 digits, mod-10 check digit, indicator
-digit, variable-measure refusal, 18-digit SSCC), `Mod10CheckDigit`, and `ParseScan` for what a
-scanner returns (`]E0` EAN/UPC, `]I1` ITF-14, `]C1` GS1-128 with AIs 00, 01, 02, 10, 17, 37 and the
-GS/FNC1 separator; AI 01 and AI 02 never together, AI 02 needs AI 00 and AI 37). Standard library
-only, no I/O, so validation is identical in every service without a runtime dependency.
+`internal/domain/shared/gs1` is the one piece of **domain code** the template carries: the GTIN,
+SSCC and GLN value objects (8/12/13/14-digit GTIN normalised to 14 digits, mod-10 check digit,
+indicator digit, variable-measure refusal, 18-digit SSCC, 13-digit `ParseGLN`), `Mod10CheckDigit`,
+SSCC generation, and `ParseScan` for what a scanner returns (`]E0` EAN/UPC, `]I1` ITF-14, `]C1`
+GS1-128 with AIs 00, 01, 02, 10, 11, 13, 15, 17, 21, 37, 400, 410, 413 and the GS/FNC1 separator;
+AI 01 and AI 02 never together, AI 02 needs AI 00 and AI 37). Standard library only, no I/O, no
+clock, so validation is identical in every service without a runtime dependency.
+
+- **Label AIs.** 11 production, 13 packaging, 15 best-before and 17 expiry share one `Date`
+  validation (YYMMDD, month 01-12, day within the real month, `DD=00` = last day of the month).
+  21 serial (1-20) and 400 customer PO (1-30) are character-set-82 variable-length AIs; 410 ship-to
+  and 413 ship-for are fixed 13-digit GLNs with a mod-10 check. They fill added `Scan` fields
+  (`ProductionDate`, `PackagingDate`, `BestBefore`, `Serial`, `PurchaseOrder`, `ShipToGLN`,
+  `ShipForGLN`); no combination rule was added for them, and a new AI alone still identifies nothing.
+  AIs 11/13/15/21/400/410/413 used to be `ErrUnknownAI`; every other AI still is.
+- **Century.** `ParseScan` reads a two-digit year as 20YY (unchanged). `ParseScanAt(raw, refYear)`
+  applies the GS1 window instead (51-99 above the reference YY: previous century; 50 or more
+  below: next); the caller passes the year, the package has no clock.
+- **SSCC generation.** `BuildSSCC(extension, companyPrefix, serial)` = extension digit (0-9) +
+  company prefix (7-10 digits) + serial zero-padded to fill 17 digits + check digit. It only
+  formats and validates: no counter, no randomness; allocating a unique serial is the service's job.
+  `SSCC.HumanReadable()` is `(00)` + the 18 digits. (`NewSSCC(payload)`, which only appends the
+  check digit to a 17-digit payload, is unchanged.)
 
 How it reaches a service and stays identical:
 
