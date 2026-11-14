@@ -1,0 +1,11 @@
+{
+  "_doc": "EXAMPLE (warehouse-harness-template) — copy to contracts/pinned.json when your repo adopts the consumer contract kit. Every contract copy this repo pins from a producer, and the producer branch it must equal. scripts/harness/pinned_contract_gate.py fails CI when a copy differs from the producer's develop. Format: one entry per pinned producer file — local = path of the byte-copy inside THIS repo (convention: internal/adapters/outbound/<producer>/testdata/<producer>.openapi.yaml or <producer>.asyncapi.yaml); repo = the producer's GitHub repo (IQVO/<producer>); path = the file in the producer repo that is pinned (apis/openapi.yaml for REST, apis/asyncapi.yaml for events); ref = the producer branch the copy must equal (develop). Pins are byte-copies: refresh = copy the producer's file over the pin, NEVER edit it; then fix what the contract tests report. See docs/contract-testing.md.",
+  "pins": [
+    {
+      "local": "internal/adapters/outbound/deliverypromise/testdata/delivery-promise.openapi.yaml",
+      "repo": "IQVO/delivery-promise",
+      "path": "apis/openapi.yaml",
+      "ref": "develop"
+    }
+  ]
+}

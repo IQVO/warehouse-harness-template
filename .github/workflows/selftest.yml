@@ -25,6 +25,8 @@ jobs:
         run: python3 scripts/harness/test_hook.py
       - name: Config sensors (repo_lint) tests
         run: python3 scripts/harness/test_repo_lint.py
+      - name: Consumer contract kit gate (pure comparison) tests
+        run: python3 scripts/harness/test_pinned_contract_gate.py
       - name: Python scripts compile
         run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
       - name: Managed Go fitness tests build and pass

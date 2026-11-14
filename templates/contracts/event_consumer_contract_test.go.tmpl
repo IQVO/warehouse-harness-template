@@ -1,0 +1,206 @@
+// templates/contracts/event_consumer_contract_test.go.tmpl — E1–E4 archetype
+// skeletons.
+//
+// Copy next to the Kafka reader / CloudEvents decoder that consumes ONE
+// producer's topic(s) and substitute the producer's names (SEARCH-FOR).
+// Compilable in spirit. Parses the pinned asyncapi with gopkg.in/yaml.v3
+// only — NO other new dependencies. The pinned copy lives at
+// testdata/{{PRODUCER}}.asyncapi.yaml and is listed in contracts/pinned.json.
+//
+// CRITICAL CONVENTION (docs/contract-testing.md): the fleet's asyncapi.yaml
+// files use CHANNEL-PERSPECTIVE operations, inverted from the AsyncAPI 2.6
+// app perspective. A producer's OWN topics are documented under 'subscribe:'
+// (the app publishes; written by the outbox relay); topics it CONSUMES from
+// others are under 'publish:' (tagged 'consumed'). To find what a producer
+// PRODUCES in a 2.6 spec, read its 'subscribe:' operations. Retail-network
+// specs are 3.0.0: the equivalent is 'action: send' operations (consumed
+// topics are 'action: receive' tagged 'consumed').
+package {{PRODUCER}}_consumer_test
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// pinnedAsyncAPI is the minimal shape of the producer's pinned spec this kit
+// needs: channels, and whether each channel is one the producer PRODUCES.
+type pinnedAsyncAPI struct {
+	AsyncAPI  string `yaml:"asyncapi"`
+	Channels  map[string]struct {
+		Address   string `yaml:"address"`
+		Subscribe *struct { // 2.6: present => the producer's OWN topic (channel perspective!)
+			OperationID string `yaml:"operationId"`
+			Message     *any   `yaml:"message"`
+		} `yaml:"subscribe"`
+		Publish *struct { // 2.6: present => a topic the PRODUCER consumes from someone else
+			OperationID string `yaml:"operationId"`
+		} `yaml:"publish"`
+	} `yaml:"channels"`
+	Operations map[string]struct { // 3.0: send => the producer's OWN topic
+		Action  string `yaml:"action"`
+		Channel any    `yaml:"channel"`
+	} `yaml:"operations"`
+}
+
+func loadPinnedAsyncAPI(t *testing.T) pinnedAsyncAPI {
+	t.Helper()
+	raw, err := readFile("testdata/{{PRODUCER}}.asyncapi.yaml") // SEARCH-FOR: os.ReadFile or your test helper.
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec pinnedAsyncAPI
+	if err := yaml.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("pinned asyncapi does not parse: %v", err)
+	}
+	return spec
+}
+
+// producedChannels returns the channels the producer writes to, honouring the
+// channel-perspective convention: 2.6 'subscribe:' (sic) and 3.0 'action: send'.
+func producedChannels(t *testing.T, spec pinnedAsyncAPI) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	if strings.HasPrefix(spec.AsyncAPI, "3.") {
+		// 3.0: map each send operation to its channel's address via the $ref.
+		for name, op := range spec.Operations {
+			if op.Action != "send" {
+				continue // 'receive' + tag 'consumed' = topics the PRODUCER consumes.
+			}
+			ref := refString(op.Channel) // SEARCH-FOR: op.Channel is '#/channels/<name>'; resolve it.
+			if addr, ok := channelAddress(spec, ref); ok {
+				out[addr] = append(out[addr], name)
+			}
+		}
+		return out
+	}
+	// 2.6 channel perspective: OWN topic <=> the channel has a 'subscribe' op.
+	for _, ch := range spec.Channels {
+		if ch.Subscribe != nil && ch.Subscribe.OperationID != "" {
+			out[ch.Address] = nil
+		}
+	}
+	return out
+}
+
+// E1 — every topic this repo's Kafka reader subscribes to appears as a
+// produced channel in the producer's pinned asyncapi.
+func TestPinnedAsyncAPICoversSubscriptions(t *testing.T) {
+	produced := producedChannels(t, loadPinnedAsyncAPI(t))
+	subscribed := []string{
+		// SEARCH-FOR: every topic string the repo's reader configuration names
+		// (grep the consumer-group setup / env defaults, not your memory).
+		"wms.{{PRODUCER}}.events",
+	}
+	for _, topic := range subscribed {
+		if _, ok := produced[topic]; !ok {
+			t.Errorf("reader subscribes to %q but the producer's pinned spec does not produce it (remember: own topics live under 'subscribe:' / action: send)", topic)
+		}
+	}
+}
+
+// E2 — every message type documented on a subscribed topic decodes through
+// the repo's REAL CloudEvents decoder/handler.
+func TestGoldenEventsDecode(t *testing.T) {
+	events := []struct{ name, fixture string }{
+		// SEARCH-FOR: every message the producer documents on the subscribed
+		// topic, one golden fixture each (producer examples when they exist;
+		// otherwise derived from the schema — mark it 'derived from schema;
+		// producer example backfill pending' in the PR body).
+		{"{{EVENT_NAME}}", "testdata/{{EVENT_NAME}}.cloudevent.json"},
+	}
+	for _, ev := range events {
+		t.Run(ev.name, func(t *testing.T) {
+			raw := readFixture(t, ev.fixture)
+			// SEARCH-FOR: drive the repo's real decode path — the same
+			// function the Kafka reader calls, not a re-implementation:
+			//   msg, err := reader.DecodeCloudevent(ctx, raw)
+			//   handler.Apply(ctx, msg)
+			// then assert the read model / policy input it feeds.
+			var v map[string]any
+			if err := json.Unmarshal(raw, &v); err != nil {
+				t.Fatalf("%s does not decode: %v", ev.name, err)
+			}
+		})
+	}
+}
+
+// E3 — fixtures carry the mandatory CloudEvents envelope invariants.
+func TestCloudEventsEnvelopeInvariants(t *testing.T) {
+	for _, fixture := range []string{"testdata/{{EVENT_NAME}}.cloudevent.json"} {
+		raw := readFixture(t, fixture)
+		var env struct {
+			SpecVersion     string `json:"specversion"`
+			ID              string `json:"id"`
+			Source          string `json:"source"`
+			Type            string `json:"type"`
+			Subject         string `json:"subject"`
+			Time            string `json:"time"`
+			DataContentType string `json:"datacontenttype"`
+			DataSchema      string `json:"dataschema"`
+		}
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatalf("%s: %v", fixture, err)
+		}
+		if env.SpecVersion != "1.0" {
+			t.Errorf("%s: specversion = %q, want 1.0", fixture, env.SpecVersion)
+		}
+		for _, pair := range [][2]string{
+			{"id", env.ID}, {"source", env.Source}, {"type", env.Type},
+			{"subject", env.Subject}, {"time", env.Time},
+			{"datacontenttype", env.DataContentType}, {"dataschema", env.DataSchema},
+		} {
+			if pair[1] == "" {
+				t.Errorf("%s: mandatory attribute %q is empty", fixture, pair[0])
+			}
+		}
+		// The dataschema urn names the producer: urn:warehouse:<producer>:...
+		// (retail-network: urn:retailnetwork:<context>:...).
+		if !strings.HasPrefix(env.DataSchema, "urn:warehouse:{{PRODUCER}}:") &&
+			!strings.HasPrefix(env.DataSchema, "urn:retailnetwork:{{CONTEXT}}:") {
+			t.Errorf("%s: dataschema %q does not name the producer", fixture, env.DataSchema)
+		}
+		// The wire carries content-type application/cloudevents+json; assert
+		// it wherever the repo's test doubles record Kafka headers.
+		// SEARCH-FOR: headers.Get("content-type") == "application/cloudevents+json".
+	}
+}
+
+// E4 — extra data keys must not break the decoder; unknown dataschema
+// versions route to the repo's documented DLQ policy (if any).
+func TestUnknownAttributesTolerated(t *testing.T) {
+	t.Run("extra data keys are ignored", func(t *testing.T) {
+		raw := readFixture(t, "testdata/{{EVENT_NAME}}.cloudevent.json")
+		var env map[string]any
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		env["data"].(map[string]any)["aFieldThisVersionDoesNotKnow"] = "forward compatibility"
+		perturbed, _ := json.Marshal(env)
+		// SEARCH-FOR: the SAME real decode path as E2 must succeed — unknown
+		// keys are ignored, per every consumed-topic description in the fleet.
+		var v map[string]any
+		if err := json.Unmarshal(perturbed, &v); err != nil {
+			t.Fatalf("decoder broke on an extra data key: %v", err)
+		}
+	})
+
+	t.Run("unknown dataschema version follows the DLQ policy", func(t *testing.T) {
+		raw := readFixture(t, "testdata/{{EVENT_NAME}}.cloudevent.json")
+		var env map[string]any
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		env["dataschema"] = strings.Replace(env["dataschema"].(string), ":v1", ":v999", 1)
+		perturbed, _ := json.Marshal(env)
+		_ = perturbed
+		// SEARCH-FOR: assert the repo's DOCUMENTED policy for an
+		// unimplemented dataschema version — skip-and-commit, dead-letter to
+		// <topic>.dlq, or dead-letter-at-once. What is never allowed:
+		// crashing, blocking the partition, or applying the payload anyway.
+		// If the repo documents no DLQ policy, assert the documented skip
+		// behaviour and cite its ADR here.
+	})
+}
