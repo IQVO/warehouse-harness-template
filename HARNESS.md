@@ -42,6 +42,7 @@ three regulation categories: **maintainability**, **architecture fitness**,
 | `vuln` (govulncheck) | maintainability | computational | PR | yes | seconds |
 | `api-lint` (Spectral) | maintainability | computational | PR | yes | seconds |
 | `docs-api-drift` | maintainability | computational | PR | yes | seconds |
+| `pinned-contracts` (consumer contract pins; standard: `docs/contract-testing.md`) | architecture fitness | computational | PR, push | yes | seconds |
 | `web` (vitest/tsc/eslint) | maintainability | computational | PR | yes | minutes |
 | `helm-lint` | maintainability | computational | PR (targeting main) | yes | seconds |
 | `trivy-scan` | maintainability | computational | PR (targeting main) | yes (CRITICAL/HIGH w/ fix) | minutes |
