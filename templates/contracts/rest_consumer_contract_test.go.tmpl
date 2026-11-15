@@ -1,0 +1,213 @@
+// templates/contracts/rest_consumer_contract_test.go.tmpl — R1–R4 archetype skeletons.
+//
+// Copy next to the outbound gateway for ONE producer
+// (internal/adapters/outbound/<producer>/), substitute the producer's names,
+// and fill in the call sites / fixtures / DTOs marked SEARCH-FOR. Compilable
+// in spirit: every archetype is complete except for the repo-specific tables.
+// Test-only dependency: github.com/getkin/kin-openapi (keep it out of the
+// production import graph). The pinned copy lives at
+// testdata/<producer>.openapi.yaml and is listed in contracts/pinned.json.
+// Fleet standard: docs/contract-testing.md (warehouse-harness-template).
+package {{PRODUCER}}_test
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+// loadPinnedSpec loads the byte-copy of the producer's apis/openapi.yaml.
+func loadPinnedSpec(t *testing.T) *openapi3.T {
+	t.Helper()
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromDataFile("testdata/{{PRODUCER}}.openapi.yaml")
+	if err != nil {
+		t.Fatalf("pinned spec does not load (did the refresh break it?): %v", err)
+	}
+	return doc
+}
+
+// R1 — every (method, path) the gateway issues exists in the pinned spec.
+func TestPinnedSpecCoversEveryCallSite(t *testing.T) {
+	doc := loadPinnedSpec(t)
+	callsites := []struct{ method, path string }{
+		// SEARCH-FOR: enumerate EVERY route the gateway issues — grep its
+		// request-building code, not your memory. One missing row here is the
+		// whole test defeated.
+		{"POST", "/delivery-quotes"},
+	}
+	for _, cs := range callsites {
+		item := doc.Paths.Find(cs.path)
+		if item == nil {
+			t.Errorf("gateway calls %s %s but the pinned spec has no such path", cs.method, cs.path)
+			continue
+		}
+		var op *openapi3.Operation
+		switch cs.method {
+		case http.MethodGet:
+			op = item.Get
+		case http.MethodPost:
+			op = item.Post
+		case http.MethodPut:
+			op = item.Put
+		case http.MethodPatch:
+			op = item.Patch
+		case http.MethodDelete:
+			op = item.Delete
+		}
+		if op == nil {
+			t.Errorf("gateway calls %s %s but the pinned spec does not define %s on it", cs.method, cs.path, cs.method)
+		}
+	}
+}
+
+// R2 — every testdata fixture validates against the pinned schema.
+func TestExamplesSatisfyPinnedSpec(t *testing.T) {
+	doc := loadPinnedSpec(t)
+	fixtures := []struct{ fixture, schema string }{
+		// SEARCH-FOR: every fixture file the gateway tests rely on, with the
+		// response schema it must satisfy.
+		{"testdata/quote-response.example.json", "QuoteResponse"},
+	}
+	for _, fx := range fixtures {
+		raw, err := os.ReadFile(fx.fixture)
+		if err != nil {
+			t.Fatalf("%s: %v", fx.fixture, err)
+		}
+		schemaRef := doc.Components.Schemas[fx.schema]
+		if schemaRef == nil {
+			t.Fatalf("%s: schema %q is not in the pinned spec", fx.fixture, fx.schema)
+		}
+		var body any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("%s is not JSON: %v", fx.fixture, err)
+		}
+		if err := schemaRef.Value.VisitJSON(body); err != nil {
+			t.Errorf("%s does not satisfy the pinned %q schema: %v", fx.fixture, fx.schema, err)
+		}
+	}
+}
+
+// R3 — fixtures served via httptest through the REAL gateway; problem+json
+// errors map to sentinel errors.
+func TestGatewayDecodesSpecExamples(t *testing.T) {
+	t.Run("success fixtures decode into the DTOs the domain reads", func(t *testing.T) {
+		raw, err := os.ReadFile("testdata/{{EXAMPLE_SUCCESS_FIXTURE}}.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(raw)
+		}))
+		defer srv.Close()
+		g := newGateway(t, srv.URL) // SEARCH-FOR: construct the REAL gateway against the stub.
+		got, err := g.{{CALL}}(t.Context()) // SEARCH-FOR: the call under test, with real arguments.
+		if err != nil {
+			t.Fatalf("a spec-valid example must decode: %v", err)
+		}
+		// SEARCH-FOR: assert the fields the domain actually reads, so a rename
+		// in the spec surfaces here, not in production.
+		if got.{{FIELD}} == "" {
+			t.Errorf("decoded DTO carries an empty {{FIELD}} — gateway silently dropped it")
+		}
+	})
+
+	t.Run("problem+json fixtures map to sentinel errors", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			status  int
+			body    string
+			wantErr error
+		}{
+			// SEARCH-FOR: every error shape the pinned spec documents for the
+			// routes called (and the transport failures: garbage 200, 502).
+			{"rejected", 422, `{"type":"/problems/validation-failed","title":"Validation failed","detail":"lines are required"}`, errRejected},
+			{"unavailable", 502, ``, errUnavailable},
+			{"garbage 200", 200, `not json`, errUnavailable},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/problem+json")
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer srv.Close()
+				g := newGateway(t, srv.URL)
+				if _, err := g.{{CALL}}(t.Context()); !errors.Is(err, tc.wantErr) {
+					t.Fatalf("got %v, want %v", err, tc.wantErr)
+				}
+			})
+		}
+	})
+}
+
+// R4 — every DTO field the gateway reads is specified, with a compatible
+// type; optional-in-spec fields are tolerated (pointer/omitempty/zero-value).
+func TestFieldsWeReadAreSpecified(t *testing.T) {
+	doc := loadPinnedSpec(t)
+	schemaRef := doc.Components.Schemas["{{RESPONSE_SCHEMA}}"]
+	if schemaRef == nil {
+		t.Fatalf("schema %q is not in the pinned spec", "{{RESPONSE_SCHEMA}}")
+	}
+	props := schemaRef.Value.Properties
+	required := map[string]bool{}
+	for _, name := range schemaRef.Value.Required {
+		required[name.Value] = true
+	}
+
+	var dto {{RESPONSE_DTO}} // SEARCH-FOR: the gateway's response DTO.
+	dtoType := reflect.TypeOf(dto)
+	for i := 0; i < dtoType.NumField(); i++ {
+		field := dtoType.Field(i)
+		tag := field.Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		prop, ok := props[name]
+		if !ok {
+			t.Errorf("DTO reads %q but the pinned spec does not declare it", name)
+			continue
+		}
+		// Optional in spec => the DTO must tolerate its absence.
+		omitempty := strings.Contains(tag, ",omitempty")
+		if !required[name] && !omitempty && field.Type.Kind() != reflect.Pointer {
+			t.Errorf("%q is optional in the spec but the DTO neither uses a pointer nor omitempty — a legitimate omission will zero it silently", name)
+		}
+		// Compatible type: string <-> string, number <-> float32/64 & ints,
+		// boolean <-> bool, array <-> slice, object <-> struct/map.
+		kind := field.Type.Kind()
+		switch prop.Value.Type {
+		case &openapi3.Types{openapi3.TypeString}:
+			if kind != reflect.String {
+				t.Errorf("%q is a string in the spec but %v in the DTO", name, kind)
+			}
+		case &openapi3.Types{openapi3.TypeInteger, openapi3.TypeNumber}:
+			switch kind {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+				reflect.Float32, reflect.Float64, reflect.Pointer:
+			default:
+				t.Errorf("%q is numeric in the spec but %v in the DTO", name, kind)
+			}
+		case &openapi3.Types{openapi3.TypeBoolean}:
+			if kind != reflect.Bool && kind != reflect.Pointer {
+				t.Errorf("%q is a boolean in the spec but %v in the DTO", name, kind)
+			}
+		case &openapi3.Types{openapi3.TypeArray}:
+			if kind != reflect.Slice && kind != reflect.Pointer {
+				t.Errorf("%q is an array in the spec but %v in the DTO", name, kind)
+			}
+		}
+	}
+}
