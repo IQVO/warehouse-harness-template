@@ -39,6 +39,8 @@ jobs:
         run: python3 tools/test_harness_sync.py
       - name: GS1 package is green on its own (tests, byte-identity digest)
         run: go test ./internal/domain/shared/gs1/ -race -count=1
+      - name: Consumer contract kit gate (pure comparison) tests
+        run: python3 scripts/harness/test_pinned_contract_gate.py
       - name: Python scripts compile
         run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
       - name: Managed Go fitness tests build and pass
