@@ -42,6 +42,14 @@ you may need to lower the threshold in the SAME PR with a dated comment
 explaining why — never silently; a future reader needs to know the drop
 was intentional, not a regression that slipped through.
 
+### Quoted thresholds never gate
+
+`efficacy: "95"` is a YAML string; gremlins v0.6.0 reads the key with a float type
+assertion and gets 0, so the gate passes whatever the score. Write `efficacy: 95`.
+Before unquoting an old file, measure each package (`make mutation`, run after
+`go clean -testcache`; a warm test cache makes gremlins' coverage pass instant and
+reports spurious TIMED OUT mutants): the gate becomes live and the weakest package decides.
+
 ## Three real pitfalls that have each cost a real CI failure in this fleet
 
 ### 1. Zero/origin-value fixtures hide arithmetic mutants
