@@ -27,5 +27,11 @@ unleash:
     # differs. See HARNESS.md's mutation-testing section for the
     # tagless-switch-under-reports pitfall before assuming a low number
     # means missing tests.
-    efficacy: "{{MEASURED_EFFICACY_MINUS_1}}"
-    mutant-coverage: "{{MEASURED_MUTANT_COVERAGE_MINUS_1}}"
+    #
+    # WRITE A PLAIN NUMBER, NEVER A QUOTED STRING. gremlins v0.6.0 reads these two keys with
+    # a float type assertion (internal/report/report.go `assess`), so `efficacy: "95"` (a YAML
+    # string) is read as 0 and the gate NEVER fails. Verified: a package at 95.24% efficacy exits 0
+    # with "99" and exits 10 with 99. The values below stay 0 (dormant) until you replace them:
+    # efficacy = {{MEASURED_EFFICACY_MINUS_1}}, mutant-coverage = {{MEASURED_MUTANT_COVERAGE_MINUS_1}}.
+    efficacy: 0
+    mutant-coverage: 0

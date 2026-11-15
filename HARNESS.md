@@ -244,6 +244,14 @@ failure mode the `drift` job's coverage-quality check is built to catch.
 (`make mutation-full`), then set the threshold strictly below what you
 measured; never copy a sibling repo's numbers.
 
+**Write the thresholds as plain numbers, never quoted.** gremlins v0.6.0 reads
+`efficacy` and `mutant-coverage` with a float type assertion, so a quoted value
+(`efficacy: "95"`) is a string, is read as 0, and the gate never fails. A
+package measured at 95.24% efficacy exits 0 with `"99"` and exits 10 with `99`.
+`scripts/harness-audit.py` reports a repo whose thresholds are not plain numbers.
+Unquoting makes the gate live, so measure every package first (CI runs per package;
+an aggregate can hide a weak one) and set the threshold below the weakest.
+
 **Pitfall: a tagless `switch { case ...: ... }` can under-report mutator
 coverage versus the equivalent `if / if / return` chain**, even with
 identical test coverage. Confirmed concretely on warehouse-ops-agent PR #58:

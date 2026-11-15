@@ -37,6 +37,8 @@ jobs:
         run: python3 tools/test_migrate_gs1.py
       - name: Weekly-sync tooling (scoped-rules block in both profiles + migrate_v4, harness-health V4_MANAGED drift)
         run: python3 tools/test_harness_sync.py
+      - name: Fleet audit (the gremlins plain-number threshold sensor)
+        run: python3 tools/test_harness_audit.py
       - name: GS1 package is green on its own (tests, byte-identity digest)
         run: go test ./internal/domain/shared/gs1/ -race -count=1
       - name: Consumer contract kit gate (pure comparison) tests

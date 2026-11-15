@@ -103,7 +103,9 @@ class ManifestItem:
     # kind: "ci_job" checks .github/workflows/ci.yml for a top-level job
     # key; "file" checks a file exists (git ls-tree; a symlink counts);
     # "file_glob" checks at least one file matches a prefix; "guide_symlink"
-    # checks AGENTS.md is a symlink to CLAUDE.md or CLAUDE.md to AGENTS.md.
+    # checks AGENTS.md is a symlink to CLAUDE.md or CLAUDE.md to AGENTS.md;
+    # "gremlins_plain" checks .gremlins.yaml's efficacy and mutant-coverage are plain
+    # numbers (gremlins reads a quoted string as 0, so the gate would never fail).
     kind: str
     target: str
     # Only meaningful for ci_job: some sensors are legitimately absent in
@@ -126,6 +128,7 @@ MANIFEST: list[ManifestItem] = [
     ManifestItem("helm-lint", CATEGORY_MAINTAINABILITY, "ci_job", "helm-lint", requires="has_chart"),
     ManifestItem("trivy-scan", CATEGORY_MAINTAINABILITY, "ci_job", "trivy-scan"),
     ManifestItem(".gremlins.yaml", CATEGORY_MAINTAINABILITY, "file", ".gremlins.yaml"),
+    ManifestItem("gremlins thresholds are plain numbers", CATEGORY_MAINTAINABILITY, "gremlins_plain", ".gremlins.yaml"),
     ManifestItem("lefthook.yml", CATEGORY_MAINTAINABILITY, "file", "lefthook.yml"),
     ManifestItem(".golangci.yml", CATEGORY_MAINTAINABILITY, "file", ".golangci.yml"),
     # --- maintainability: guides (feedforward) ---
@@ -160,6 +163,22 @@ def run(cmd: list[str]) -> str:
 def repo_file_list(repo: Path, ref: str = "origin/develop") -> list[str]:
     out = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref])
     return out.splitlines() if out else []
+
+
+def gremlins_thresholds_plain(content: str) -> bool:
+    """True when .gremlins.yaml sets efficacy and mutant-coverage as plain numbers.
+
+    gremlins reads the keys with a float type assertion: a quoted value is a string, comes out as 0 and
+    the gate never fails. Missing keys, quotes and unfilled placeholders all count as not plain.
+    """
+    found = {}
+    for line in content.splitlines():
+        m = re.match(r"^\s*(efficacy|mutant-coverage):\s*(\S+)", line)
+        if m:
+            found[m.group(1)] = m.group(2)
+    return set(found) == {"efficacy", "mutant-coverage"} and all(
+        re.fullmatch(r"\d+(\.\d+)?", v) for v in found.values()
+    )
 
 
 def repo_ci_jobs(repo: Path, ref: str = "origin/develop") -> set[str]:
@@ -262,6 +281,9 @@ def audit_repo(repo: Path) -> RepoAudit:
             found = item.target in file_set
         elif item.kind == "file_glob":
             found = any(f.startswith(item.target) for f in files)
+        elif item.kind == "gremlins_plain":
+            found = item.target in file_set and gremlins_thresholds_plain(
+                run(["git", "-C", str(repo), "show", f"{ref}:{item.target}"]))
         elif item.kind == "guide_symlink":
             found = guide_is_symlinked(links, file_set)
         else:
