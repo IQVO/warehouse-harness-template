@@ -46,6 +46,7 @@ three regulation categories: **maintainability**, **architecture fitness**,
 | `api-lint` (Spectral) | maintainability | computational | PR | yes | seconds |
 | `docs-api-drift` | maintainability | computational | PR | yes | seconds |
 | `pinned-contracts` (consumer contract pins; standard: `docs/contract-testing.md`) | architecture fitness | computational | PR, push | yes | seconds |
+| `spec-breaking` (producer spec breaking-change gate: `oasdiff breaking --fail-on ERR` + `asyncapi_breaking.py`; kit: `docs/spec-breaking-kit.md`) | architecture fitness | computational | PR | yes | seconds |
 | `web` (vitest/tsc/eslint) | maintainability | computational | PR | yes | minutes |
 | `helm-lint` | maintainability | computational | PR (targeting main) | yes | seconds |
 | `trivy-scan` | maintainability | computational | PR (targeting main) | yes (CRITICAL/HIGH w/ fix) | minutes |

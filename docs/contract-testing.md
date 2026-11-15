@@ -79,6 +79,12 @@ point: the refresh is where you learn the producer changed. Update the
 provenance note in the adapter's `testdata/README.md` (and the ADR, if one
 covers the integration) in the same commit.
 
+## Producer side: the breaking-change gate
+
+The pin only proves a consumer matches the producer's `develop` *after* the producer merged. The producer's own
+PR gate (`spec-breaking`: oasdiff for REST, `asyncapi_breaking.py` for events, both naming the pinning consumers)
+is specified in [spec-breaking-kit.md](spec-breaking-kit.md).
+
 ## Drift policy
 
 - The CI job `pinned-contracts` runs `python3 scripts/harness/pinned_contract_gate.py`
