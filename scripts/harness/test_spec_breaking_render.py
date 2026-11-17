@@ -4,7 +4,9 @@
 Stdlib only; PyYAML optional (the YAML-validity cases skip without it). actionlint, when installed,
 also lints the rendered template. Run: python3 scripts/harness/test_spec_breaking_render.py
 """
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -49,10 +51,33 @@ jobs:
       - uses: {CO}
 """
 
+# An older revision of the kit block, as an adopting repo carries it (different length on purpose).
+OLD_BLOCK = """  # ============================================================
+  # CLASSIFICATION: CONTRACT TESTING (producer breaking-change gate)
+  # ============================================================
+  # An older revision of the kit block.
+  spec-breaking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {{ACTIONS_CHECKOUT}}
+  # a comment at job depth, inside the job
+      - uses: {{ACTIONS_SETUP_PYTHON}}
+      - run: |
+          oasdiff breaking --fail-on ERR base.yaml head.yaml
+
+          echo done
+"""
+
+
 
 def block():
     with open(sbr.BLOCK, encoding="utf-8") as fh:
         return fh.read()
+
+
+def old_ci():
+    """CI as an adopting repo has it: the older block, inserted by the kit."""
+    return sbr.insert(CI, sbr.render(OLD_BLOCK, CI))
 
 
 class Contract(unittest.TestCase):
@@ -108,6 +133,105 @@ class Contract(unittest.TestCase):
             self.assertEqual(sbr.main([os.path.join(tmp, "missing")]), 3)
 
 
+class Update(unittest.TestCase):
+    """--update: an existing block is replaced by the current one, and nothing else moves."""
+
+    def test_update_replaces_the_old_block_and_equals_a_fresh_insert(self):
+        before = old_ci()
+        self.assertIn("An older revision of the kit block.", before)
+        after = sbr.update(before, sbr.render(block(), before))
+        self.assertEqual(after, sbr.insert(CI, sbr.render(block(), CI)))
+        self.assertNotIn("An older revision of the kit block.", after)
+        self.assertNotIn("a comment at job depth, inside the job", after)
+        self.assertEqual(after.count("\n  spec-breaking:"), 1)
+
+    def test_the_rest_of_the_file_is_byte_identical(self):
+        before = old_ci()
+        after = sbr.update(before, sbr.render(block(), before))
+        head = before[:before.index("  # ====")]
+        tail = before[before.index("\n  # Shift-left container scan."):]
+        self.assertTrue(after.startswith(head))
+        self.assertTrue(after.endswith(tail))
+        self.assertEqual(after[len(head):len(after) - len(tail)], sbr.render(block(), CI).rstrip("\n") + "\n")
+
+    def test_the_blank_lines_and_comments_between_the_job_and_trivy_scan_are_kept(self):
+        before = old_ci().replace("\n  # Shift-left container scan.", "\n\n  # a loose note\n\n  # Shift-left container scan.")
+        after = sbr.update(before, sbr.render(block(), before))
+        tail = before[before.index("\n\n\n  # a loose note"):]
+        self.assertTrue(after.endswith(tail))
+
+    def test_update_is_idempotent(self):
+        once = sbr.update(old_ci(), sbr.render(block(), old_ci()))
+        self.assertEqual(sbr.update(once, sbr.render(block(), once)), once)
+
+    def test_update_inserts_when_the_job_is_absent(self):
+        self.assertEqual(sbr.update(CI, sbr.render(block(), CI)), sbr.insert(CI, sbr.render(block(), CI)))
+
+    def test_ambiguous_boundaries_are_a_contract_error(self):
+        before = old_ci()
+        job = before[before.index("  spec-breaking:"):before.index("\n  # Shift-left container scan.")]
+        cases = {
+            "no trivy-scan at all": before.replace("  trivy-scan:", "  scan:"),
+            "trivy-scan above the job": CI + "\n" + sbr.render(OLD_BLOCK, CI),
+            "another job between": before.replace("\n  # Shift-left container scan.",
+                                                  "\n  extra:\n    runs-on: ubuntu-latest\n\n  # Shift-left container scan."),
+            "the job twice": before.replace("\n  # Shift-left container scan.", "\n" + job + "\n  # Shift-left container scan."),
+            "a top-level key between": before.replace("\n  # Shift-left container scan.", "\nenv:\n  # Shift-left container scan."),
+        }
+        for name, text in cases.items():
+            with self.subTest(name), self.assertRaises(sbr.ContractError):
+                sbr.update(text, sbr.render(block(), text))
+
+    def _repo(self, tmp, text):
+        os.makedirs(os.path.join(tmp, ".github", "workflows"))
+        path = os.path.join(tmp, ".github", "workflows", "ci.yml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def _read(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_cli_without_update_leaves_an_existing_block_byte_identical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._repo(tmp, old_ci())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(sbr.main([tmp]), 0)
+            self.assertEqual(self._read(path), old_ci())
+            self.assertIn("spec-breaking already present, unchanged", out.getvalue())
+
+    def test_cli_update_dry_run_then_update_then_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._repo(tmp, old_ci())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(sbr.main([tmp, "--update", "--dry-run"]), 0)
+            self.assertEqual(self._read(path), old_ci())
+            self.assertIn("-  # An older revision of the kit block.\n", out.getvalue())   # the diff is the dry run
+            self.assertIn("would update the spec-breaking job block", out.getvalue())
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(sbr.main([tmp, "--update"]), 0)
+            updated = self._read(path)
+            self.assertEqual(updated, sbr.insert(CI, sbr.render(block(), CI)))
+            proc = subprocess.run(["python3", os.path.join(HERE, "spec_breaking_render.py"), tmp, "--update"],
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("already current, unchanged", proc.stdout)
+            self.assertEqual(self._read(path), updated)
+
+    def test_cli_update_on_ambiguous_boundaries_exits_3_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = old_ci().replace("  trivy-scan:", "  scan:")
+            path = self._repo(tmp, text)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(sbr.main([tmp, "--update"]), 3)
+            self.assertEqual(self._read(path), text)
+            self.assertIn("cannot tell where the block ends", err.getvalue())
+
+
 class Job(unittest.TestCase):
     """What the job must never regress (each line is a review finding waiting to happen)."""
 
@@ -161,7 +285,7 @@ class Job(unittest.TestCase):
             text = fh.read()
         want = sbr.render(block(), text).rstrip("\n")
         self.assertIn(want, text, "ci.yml.template drifted from templates/ci/spec-breaking.job.yml: "
-                                  "re-run spec_breaking_render.py (delete the job first)")
+                                  "re-run spec_breaking_render.py . --workflow .github/workflows/ci.yml.template --update")
 
 
 if __name__ == "__main__":
