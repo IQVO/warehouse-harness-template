@@ -85,6 +85,10 @@ The pin only proves a consumer matches the producer's `develop` *after* the prod
 PR gate (`spec-breaking`: oasdiff for REST, `asyncapi_breaking.py` for events, both naming the pinning consumers)
 is specified in [spec-breaking-kit.md](spec-breaking-kit.md).
 
+One consequence for every consumer: a new enum value in a producer's response or event is **additive** on both
+sides of that gate (REST: a warning on the producer's PR; events: it passes), so a consumer's adapter must
+tolerate an enum value it does not know instead of rejecting the response or the message.
+
 ## Drift policy
 
 - The CI job `pinned-contracts` runs `python3 scripts/harness/pinned_contract_gate.py`
