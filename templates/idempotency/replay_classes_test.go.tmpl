@@ -2,8 +2,13 @@
 // idempotency replay classes (FINAL, OUTCOME, RETRYABLE).
 //
 // Copy to internal/adapters/inbound/http/idempotency_replay_classes_test.go (the package that owns
-// the Idempotency-Key middleware), substitute the three placeholders and implement repoAdapter
-// at the bottom (the only repo-specific code, marked SEARCH-FOR). Everything above it is verbatim.
+// the Idempotency-Key middleware) and substitute the three placeholders. THIS FILE IS VERBATIM: it
+// imports the standard library only and names no database driver, so rendering it as an
+// *_integration_test.go over a real Postgres does not trip a service's testcontainers sensor
+// (TestPostgresIntegrationTestsUseTestcontainers flags pgx / database/sql in an
+// *_integration_test.go without a testcontainers import in the package). The repo-specific half is
+// ONE function, newReplayOps, in its own file (replay_classes_wiring_test.go.tmpl is the skeleton):
+// it returns six closures, and that file is the only one that names a driver.
 //
 //	{{PKG}}           the package name of the middleware's directory (the test is {{PKG}}_test)
 //	{{ROUTE}}         one idempotent route of the service, e.g. /orders (a POST the middleware wraps)
@@ -13,11 +18,12 @@
 // The tests drive the REAL middleware, built by the repo's own constructor, with a FAKE handler
 // that answers what a handler of each class answers. They know nothing of the store: the repo's
 // design (key row in the request transaction, a savepoint, a separate write) hides behind
-// replayAdapter. The tests must pass on every design; what differs is only how the adapter counts.
+// the replayOps closures. The tests must pass on every design; what differs is only how the
+// closures count.
 //
 // Fleet rule: .claude/rules/fleet/idempotency-and-outbox.md. Standard and adoption steps:
 // docs/idempotency-replay-classes.md (warehouse-harness-template). A real store (testcontainers)
-// is the strongest adapter for key-in-transaction designs; an in-memory adapter is enough for a
+// is the strongest wiring for key-in-transaction designs; an in-memory one is enough for a
 // design whose store is behind a port.
 package {{PKG}}_test
 
@@ -51,7 +57,8 @@ type problemEntry struct {
 	Class  string // the class the catalogue entry declares; "" when it declares none
 }
 
-// replayAdapter is the ONLY thing a repo implements. One adapter value = one clean store.
+// replayAdapter is what the tests drive; closureAdapter (below) implements it from the replayOps a repo
+// provides. One adapter value = one clean store.
 //
 //   - Catalogue: every problem type the service can answer on an idempotent route, read from the
 //     production catalogue (NOT a copy of it), each with the class its entry declares.
@@ -428,62 +435,57 @@ func TestPanicIsNotStored(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// SEARCH-FOR: the repo-specific adapter. Everything above is verbatim.
+// replayOps is what a repo provides: the six operations of replayAdapter as FUNCTION FIELDS. Each
+// closure may capture a pool, a store port or a fake; this file never names the type of any of
+// them, so it needs no driver import. One replayOps value = one clean store. The repo returns it
+// from newReplayOps (its own file, see replay_classes_wiring_test.go.tmpl):
 //
-// Wire it to the design the repo has (docs/idempotency-replay-classes.md, "Per-design notes"):
-//
-//   - key row in the business transaction (Postgres, pgx): Middleware = the real constructor over
-//     a testcontainers pool; Write = an INSERT through the tx bound into ctx by the repo's
-//     TxBinder / unit-of-work join, into a scratch table the test creates; Committed = a COUNT on
-//     the pool (a different connection, so only committed rows count); KeyRows = a COUNT on the
-//     idempotency table. Releasing = rollback, so KeyRows 0 and Committed 0 are real proofs.
-//   - savepoint design: the same as above; the handler runs behind a SAVEPOINT, still one
-//     transaction, nothing else to change in the adapter.
-//   - key row written separately from the business transaction (a Store behind a port): Write goes
-//     through the repo's unit of work the way a use case does; Committed counts after the request
-//     finished; KeyRows asks the store port (an in-memory fake of the port is enough, if it is the
-//     same fake the real middleware tests use). Releasing = the port's Delete/Release call.
-//
-// Refuse must call the production error path (writeError / WriteProblem) with the entry's error or
-// slug, so the production class marking runs. Do NOT write the response by hand here.
-type repoAdapter struct {
-	// SEARCH-FOR: pool / store / catalogue handles.
+//   - Catalogue: every problem type the service can answer on an idempotent route, read from the
+//     production catalogue (NOT a copy of it), each with the class its entry declares.
+//   - Middleware: the production Idempotency-Key middleware, from the repo's own constructor, over
+//     this value's store, wrapping next.
+//   - Refuse: answer e through the production error writer (writeError / WriteProblem) with the
+//     entry's error or slug, so the production class marking runs. Do NOT write the response by hand.
+//   - Write: one write made THROUGH the request's context, in the unit of work the middleware
+//     opened for this request (the repo's TxBinder / unit-of-work join).
+//   - Committed: count writes tagged tag from OUTSIDE any request (another connection).
+//   - KeyRows: rows the idempotency store holds for key (0 after the key was released).
+type replayOps struct {
+	Catalogue  func() []problemEntry
+	Middleware func(t *testing.T, next http.Handler) http.Handler
+	Refuse     func(w http.ResponseWriter, r *http.Request, e problemEntry)
+	Write      func(ctx context.Context, tag string) error
+	Committed  func(t *testing.T, tag string) int
+	KeyRows    func(t *testing.T, key string) int
 }
+
+// closureAdapter is the replayAdapter the tests above use: it forwards every method to its closure.
+type closureAdapter struct{ ops replayOps }
 
 func newReplayAdapter(t *testing.T) replayAdapter {
 	t.Helper()
-	// SEARCH-FOR: build a clean store (fresh schema or fresh in-memory store) and return the adapter.
-	panic("SEARCH-FOR: construct the repo's replayAdapter")
+	return &closureAdapter{ops: newReplayOps(t)}
 }
 
-func (a *repoAdapter) Catalogue() []problemEntry {
-	// SEARCH-FOR: map the production catalogue (every problem type the idempotent routes can
-	// answer) to problemEntry{Slug, Status, Class}. A catalogue entry that has no class field yet
-	// maps to Class "" and the first test goes red, which is the point.
-	panic("SEARCH-FOR: catalogue accessor")
+func (a *closureAdapter) Catalogue() []problemEntry { return a.ops.Catalogue() }
+
+func (a *closureAdapter) Middleware(t *testing.T, next http.Handler) http.Handler {
+	t.Helper()
+	return a.ops.Middleware(t, next)
 }
 
-func (a *repoAdapter) Middleware(t *testing.T, next http.Handler) http.Handler {
-	// SEARCH-FOR: the repo's idempotency middleware constructor, applied to next for route.
-	panic("SEARCH-FOR: middleware constructor")
+func (a *closureAdapter) Refuse(w http.ResponseWriter, r *http.Request, e problemEntry) {
+	a.ops.Refuse(w, r, e)
 }
 
-func (a *repoAdapter) Refuse(w http.ResponseWriter, r *http.Request, e problemEntry) {
-	// SEARCH-FOR: the production error writer, given the error / slug of e.
-	panic("SEARCH-FOR: production error writer")
+func (a *closureAdapter) Write(ctx context.Context, tag string) error { return a.ops.Write(ctx, tag) }
+
+func (a *closureAdapter) Committed(t *testing.T, tag string) int {
+	t.Helper()
+	return a.ops.Committed(t, tag)
 }
 
-func (a *repoAdapter) Write(ctx context.Context, tag string) error {
-	// SEARCH-FOR: one write through the request's unit of work (see the per-design notes above).
-	panic("SEARCH-FOR: write through the request transaction")
-}
-
-func (a *repoAdapter) Committed(t *testing.T, tag string) int {
-	// SEARCH-FOR: count committed writes tagged tag, from OUTSIDE the request's transaction.
-	panic("SEARCH-FOR: committed-write counter")
-}
-
-func (a *repoAdapter) KeyRows(t *testing.T, key string) int {
-	// SEARCH-FOR: rows the idempotency store holds for key.
-	panic("SEARCH-FOR: key row counter")
+func (a *closureAdapter) KeyRows(t *testing.T, key string) int {
+	t.Helper()
+	return a.ops.KeyRows(t, key)
 }

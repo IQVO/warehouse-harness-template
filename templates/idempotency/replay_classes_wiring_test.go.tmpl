@@ -1,0 +1,62 @@
+// templates/idempotency/replay_classes_wiring_test.go.tmpl — the repo-specific half of the
+// idempotency replay-class test. It is the ONLY file of the pair that knows the store.
+//
+// Copy next to the rendered replay_classes_test.go.tmpl as
+// internal/adapters/inbound/http/idempotency_replay_classes_wiring_test.go (same package,
+// {{PKG}}_test, same //go:build tag as the test, if the test has one) and implement newReplayOps.
+// Over a real Postgres, name both files *_integration_test.go: the service sensor
+// TestPostgresIntegrationTestsUseTestcontainers inspects every such file that imports pgx or
+// database/sql and wants the testcontainers postgres module imported somewhere in the same
+// package (the shared helper that boots the container, pgtest or equivalent). Reuse that helper
+// and take the pool from it by type inference (pool := pgtest.NewPool(t)): the closures below then
+// name no driver package at all. If the package has no such helper yet, add it first; do not
+// import pgx here without it, and do not read DATABASE_URL or t.Skip on it.
+//
+// Wire it to the design the repo has (docs/idempotency-replay-classes.md, "Per-design notes"):
+//
+//   - key row in the business transaction (Postgres, pgx): Middleware = the real constructor over
+//     a testcontainers pool; Write = an INSERT through the tx bound into ctx by the repo's
+//     TxBinder / unit-of-work join, into a scratch table the test creates; Committed = a COUNT on
+//     the pool (a different connection, so only committed rows count); KeyRows = a COUNT on the
+//     idempotency table. Releasing = rollback, so KeyRows 0 and Committed 0 are real proofs.
+//   - savepoint design: the same as above; the handler runs behind a SAVEPOINT, still one
+//     transaction, nothing else changes in the wiring.
+//   - key row written separately from the business transaction (a Store behind a port): Write goes
+//     through the repo's unit of work the way a use case does; Committed counts after the request
+//     finished; KeyRows asks the store port (an in-memory fake of the port is enough, if it is the
+//     same fake the real middleware tests use). Releasing = the port's Delete/Release call.
+//
+// Refuse must call the production error path (writeError / WriteProblem) with the entry's error or
+// slug, so the production class marking runs. Do NOT write the response by hand here.
+package {{PKG}}_test
+
+import "testing"
+
+// newReplayOps returns the six operations over ONE clean store (a fresh schema, truncated tables
+// or a fresh in-memory store) per call.
+func newReplayOps(t *testing.T) replayOps {
+	t.Helper()
+	// SEARCH-FOR: build the clean store, then return the closures, for example (a Postgres design):
+	//
+	//	pool := pgtest.NewPool(t)
+	//	count := func(t *testing.T, query string, args ...any) int {
+	//		t.Helper()
+	//		var n int
+	//		if err := pool.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+	//			t.Fatal(err)
+	//		}
+	//		return n
+	//	}
+	//	return replayOps{
+	//		Catalogue:  func() []problemEntry { ... map the production catalogue to Slug, Status, Class ... },
+	//		Middleware: func(_ *testing.T, next http.Handler) http.Handler { return RequireIdempotencyKey(pool, BindTx)(next) },
+	//		Refuse:     func(w http.ResponseWriter, r *http.Request, e problemEntry) { writeError(w, r, errFor(e.Slug)) },
+	//		Write:      func(ctx context.Context, tag string) error { ... INSERT through the tx bound into ctx ... },
+	//		Committed:  func(t *testing.T, tag string) int { return count(t, `SELECT count(*) FROM replay_probe WHERE tag = $1`, tag) },
+	//		KeyRows:    func(t *testing.T, key string) int { return count(t, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, key) },
+	//	}
+	//
+	// A catalogue entry that has no class field yet maps to Class "" and the first test goes red,
+	// which is the point.
+	panic("SEARCH-FOR: construct the repo's replayOps")
+}
