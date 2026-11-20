@@ -1,0 +1,40 @@
+package fixture_test
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+
+	"example.com/replayfixture/fixture"
+)
+
+// The toy wiring: replayOps over the in-memory toy middleware. A real service writes the same
+// shape over its own store (see docs/idempotency-replay-classes.md); only this file names a driver.
+func newReplayOps(t *testing.T) replayOps {
+	t.Helper()
+	store := fixture.NewStore()
+	return replayOps{
+		Catalogue: func() []problemEntry {
+			var out []problemEntry
+			for _, p := range fixture.ProblemTypes() {
+				out = append(out, problemEntry{Slug: p.Slug, Status: p.Status, Class: p.Class})
+			}
+			return out
+		},
+		Middleware: func(_ *testing.T, next http.Handler) http.Handler {
+			return fixture.RequireIdempotencyKey(store)(next)
+		},
+		Refuse: func(w http.ResponseWriter, _ *http.Request, e problemEntry) { fixture.Refuse(w, e.Slug) },
+		Write: func(ctx context.Context, tag string) error {
+			tx, ok := fixture.TxFrom(ctx)
+			if !ok {
+				return errors.New("the middleware did not bind a transaction")
+			}
+			tx.Add(tag)
+			return nil
+		},
+		Committed: func(_ *testing.T, tag string) int { return store.Committed(tag) },
+		KeyRows:   func(_ *testing.T, key string) int { return store.KeyRows(key) },
+	}
+}

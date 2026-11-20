@@ -1,0 +1,179 @@
+// Package fixture is a TOY Idempotency-Key middleware over an in-memory store. It exists only so the
+// harness selftest can compile and run templates/idempotency against something real: a correct
+// middleware (green) and three deliberately broken ones (red), chosen by TOY_MUTATION:
+//
+//	store-retryable  a RETRYABLE answer is stored under the key instead of releasing it
+//	drop-outcome     an OUTCOME answer is stored but the command's writes are rolled back
+//	unclassified     one catalogue entry declares no replay class
+package fixture
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"os"
+)
+
+// ProblemType is one entry of the toy catalogue.
+type ProblemType struct {
+	Slug   string
+	Status int
+	Class  string
+}
+
+// ProblemTypes is the toy's production catalogue.
+func ProblemTypes() []ProblemType {
+	out := []ProblemType{
+		{"invalid-body", http.StatusBadRequest, "FINAL"},
+		{"carrier-suspended", http.StatusConflict, "OUTCOME"},
+		{"concurrent-modification", http.StatusConflict, "RETRYABLE"},
+		{"dependency-unavailable", http.StatusServiceUnavailable, "RETRYABLE"},
+	}
+	if os.Getenv("TOY_MUTATION") == "unclassified" {
+		out[1].Class = ""
+	}
+	return out
+}
+
+// Tx is the unit of work the middleware opens for a request.
+type Tx struct{ tags []string }
+
+// Add records one write in the transaction.
+func (tx *Tx) Add(tag string) { tx.tags = append(tx.tags, tag) }
+
+type txKey struct{}
+
+// TxFrom returns the transaction the middleware bound into the request context.
+func TxFrom(ctx context.Context) (*Tx, bool) {
+	tx, ok := ctx.Value(txKey{}).(*Tx)
+	return tx, ok
+}
+
+type row struct {
+	body   string
+	status int
+	sum    string
+	ctype  string
+}
+
+// Store is the toy key store plus the committed writes.
+type Store struct {
+	rows      map[string]row
+	committed map[string]int
+}
+
+// NewStore returns a clean store.
+func NewStore() *Store { return &Store{rows: map[string]row{}, committed: map[string]int{}} }
+
+// Committed counts committed writes tagged tag.
+func (s *Store) Committed(tag string) int { return s.committed[tag] }
+
+// KeyRows counts the rows held for key.
+func (s *Store) KeyRows(key string) int {
+	if _, ok := s.rows[key]; ok {
+		return 1
+	}
+	return 0
+}
+
+// capture buffers an answer so the middleware decides what to do with it, and carries the class mark.
+type capture struct {
+	hdr    http.Header
+	status int
+	body   bytes.Buffer
+	class  string
+}
+
+func (c *capture) Header() http.Header { return c.hdr }
+func (c *capture) WriteHeader(s int) {
+	if c.status == 0 {
+		c.status = s
+	}
+}
+func (c *capture) Write(b []byte) (int, error) {
+	c.WriteHeader(http.StatusOK)
+	return c.body.Write(b)
+}
+
+// MarkClass is what the production error writer calls on the capturing writer.
+func (c *capture) MarkClass(class string) { c.class = class }
+
+// Refuse is the toy's production error writer: it answers the problem type with this slug and marks
+// the capturing writer with the class its catalogue entry declares.
+func Refuse(w http.ResponseWriter, slug string) {
+	for _, p := range ProblemTypes() {
+		if p.Slug != slug {
+			continue
+		}
+		if m, ok := w.(interface{ MarkClass(string) }); ok {
+			m.MarkClass(p.Class)
+		}
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(p.Status)
+		_, _ = io.WriteString(w, `{"slug":"`+p.Slug+`"}`)
+		return
+	}
+	w.WriteHeader(http.StatusInternalServerError)
+}
+
+// RequireIdempotencyKey is the toy middleware.
+func RequireIdempotencyKey(s *Store) func(http.Handler) http.Handler {
+	mutation := os.Getenv("TOY_MUTATION")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := r.Header.Get("Idempotency-Key")
+			raw, _ := io.ReadAll(r.Body)
+			sum := string(raw)
+			if key == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if prev, ok := s.rows[key]; ok {
+				if prev.sum != sum {
+					w.Header().Set("Content-Type", "application/problem+json")
+					w.WriteHeader(http.StatusConflict)
+					_, _ = io.WriteString(w, `{"slug":"idempotency-key-reused"}`)
+					return
+				}
+				w.Header().Set("Content-Type", prev.ctype)
+				w.Header().Set("Idempotency-Replayed", "true")
+				w.WriteHeader(prev.status)
+				_, _ = io.WriteString(w, prev.body)
+				return
+			}
+			tx := &Tx{}
+			c := &capture{hdr: http.Header{}}
+			r = r.WithContext(context.WithValue(r.Context(), txKey{}, tx))
+			next.ServeHTTP(c, r) // a panic leaves tx uncommitted and the key unstored
+			if c.status == 0 {
+				c.status = http.StatusOK
+			}
+			store, commit := false, false
+			switch {
+			case c.status >= http.StatusInternalServerError:
+			case c.status < http.StatusMultipleChoices:
+				store, commit = true, true
+			case c.class == "RETRYABLE":
+				store = mutation == "store-retryable"
+			case c.class == "OUTCOME":
+				store, commit = true, mutation != "drop-outcome"
+			default:
+				store = c.class == "FINAL"
+			}
+			if commit {
+				for _, tag := range tx.tags {
+					s.committed[tag]++
+				}
+			}
+			if store {
+				s.rows[key] = row{body: c.body.String(), status: c.status, sum: sum, ctype: c.hdr.Get("Content-Type")}
+			}
+			for k, v := range c.hdr {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(c.status)
+			_, _ = w.Write(c.body.Bytes())
+		})
+	}
+}
