@@ -35,7 +35,8 @@ domain code of its own (the one exception is the shared, opt-in
   `sourceDigest` in `checksum_test.go`. Not part of a default scaffold (`WITH_GS1=1` keeps it).
 - `templates/cloudevents/*.go.tmpl` — the fleet reference CloudEvents 1.0
   helper + tests, generated into Kafka services by `new-service.sh`.
-- `templates/idempotency/replay_classes_test.go.tmpl` + `docs/idempotency-replay-classes.md` — the
+- `templates/idempotency/replay_classes_test.go.tmpl` (driver-free, verbatim) +
+  `replay_classes_wiring_test.go.tmpl` (the repo's closures) + `docs/idempotency-replay-classes.md` — the
   reference test and adoption steps for the fleet's idempotency replay classes (FINAL, OUTCOME,
   RETRYABLE; rule in `.claude/rules/fleet/idempotency-and-outbox.md`). Copy-and-adapt, not generated.
 

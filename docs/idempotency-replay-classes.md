@@ -3,7 +3,8 @@
 What a service answers when a request is retried under the same `Idempotency-Key`, how that is
 classified per problem type, and the reference test every repo copies to prove it. The rule text is
 `.claude/rules/fleet/idempotency-and-outbox.md`; the test is
-`templates/idempotency/replay_classes_test.go.tmpl`. The fleet decision (owner, 2026-11-18)
+`templates/idempotency/replay_classes_test.go.tmpl` (verbatim, no driver import) plus the wiring
+skeleton `templates/idempotency/replay_classes_wiring_test.go.tmpl` (the repo's own half). The fleet decision (owner, 2026-11-18)
 supersedes the "every 4xx is stored and replayed" sentence of facility-layout ADR 0019.
 
 ## What
@@ -51,9 +52,12 @@ yard-management.
 4. **Make the middleware act on the marks**: RETRYABLE rolls the request back, key row included, and
    answers; OUTCOME commits the handler's writes together with the key row and the stored answer;
    2xx stores; 5xx and panics roll back and store nothing. Replays set `Idempotency-Replayed: true`.
-5. **Copy `templates/idempotency/replay_classes_test.go.tmpl`** to the package of the middleware,
-   substitute `{{PKG}}`, `{{ROUTE}}`, `{{REUSED_SLUG}}` and implement `repoAdapter` (the six methods
-   below).
+5. **Copy the two templates** to the package of the middleware. `replay_classes_test.go.tmpl`:
+   substitute `{{PKG}}`, `{{ROUTE}}`, `{{REUSED_SLUG}}` and change nothing else; it imports the
+   standard library only. `replay_classes_wiring_test.go.tmpl`: substitute `{{PKG}}` and implement
+   `newReplayOps(t)`, which returns the six operations below as **function fields** (`replayOps`).
+   Only the wiring file knows the store; over a real Postgres name both `*_integration_test.go` and
+   build-tag them like the repo's other integration tests (see "Fitness sensors" below).
 6. **Add one HTTP-level test per real RETRYABLE and OUTCOME entry** on the real route and a real store,
    in the style of shipping-and-tracking `TestReturnLabelDestinationRefusalIsNotStoredSoItsKeyRetriesTheWork`
    (integration, key row count 0 after the refusal) and yard-management's OUTCOME test (one visit and
@@ -65,16 +69,49 @@ yard-management.
 8. **Apply the same logic to every other write surface that stores answers**: MCP and A2A write tools
    with their own store, and the retention of the store itself (below). Then run the repo's gates.
 
-### The adapter (what the template asks of a repo)
+### The wiring (what the template asks of a repo)
 
-| Method | Provides |
+`newReplayOps(t) replayOps` returns one clean store's six operations as closures. The template's
+`closureAdapter` forwards to them, so its assertions never see the store and it names no driver.
+
+| Field (closure) | Provides |
 |---|---|
-| `Catalogue() []problemEntry` | every problem type the idempotent routes can answer, from the production catalogue, with its declared class |
-| `Middleware(t, next)` | the production middleware from the repo's constructor, over the adapter's clean store, wrapping `next` |
-| `Refuse(w, r, e)` | answer `e` through the production error writer, so the class marking runs |
-| `Write(ctx, tag)` | one write through the request's context: the same unit of work the middleware opened |
-| `Committed(t, tag)` | committed writes tagged `tag`, counted from outside any request |
-| `KeyRows(t, key)` | rows the store holds for `key` (0 after a release) |
+| `Catalogue func() []problemEntry` | every problem type the idempotent routes can answer, from the production catalogue, with its declared class |
+| `Middleware func(t, next)` | the production middleware from the repo's constructor, over the clean store, wrapping `next` |
+| `Refuse func(w, r, e)` | answer `e` through the production error writer, so the class marking runs |
+| `Write func(ctx, tag) error` | one write through the request's context: the same unit of work the middleware opened |
+| `Committed func(t, tag) int` | committed writes tagged `tag`, counted from outside any request |
+| `KeyRows func(t, key) int` | rows the store holds for `key` (0 after a release) |
+
+Before (the first template, PR 66) the repo implemented a `repoAdapter` struct with six methods and
+held its pool in a field, so the file that carried the assertions imported `pgxpool`. After, the
+struct is gone: the closures capture the pool, the file that carries the assertions imports the
+standard library only, and the one wiring file is the only place a driver can appear:
+
+```go
+// replay_classes_wiring_test.go (the repo's file; the verbatim test is untouched)
+func newReplayOps(t *testing.T) replayOps {
+	pool := pgtest.NewPool(t) // the package's shared testcontainers helper; no driver type is named
+	count := func(t *testing.T, q string, args ...any) int { /* QueryRow(...).Scan(&n) */ }
+	return replayOps{
+		Middleware: func(_ *testing.T, next http.Handler) http.Handler { return RequireIdempotencyKey(pool, BindTx)(next) },
+		Committed:  func(t *testing.T, tag string) int { return count(t, `SELECT count(*) FROM replay_probe WHERE tag = $1`, tag) },
+		// Catalogue, Refuse, Write, KeyRows likewise
+	}
+}
+```
+
+### Fitness sensors
+
+Services carry `TestPostgresIntegrationTestsUseTestcontainers` (managed, `internal/architecture`):
+a `*_integration_test.go` that imports pgx or `database/sql` needs the testcontainers postgres module
+imported in a `.go` file of the same package, and no `DATABASE_URL` read or `t.Skip` tied to it.
+The rendered `replay_classes_test.go.tmpl` never trips it (no driver import). The wiring file must
+satisfy it like any other Postgres test: reuse the package's shared container helper and take the
+pool from it by type inference, so no driver package is named in the file (order-sourcing PR 83
+works this way); if the package has no helper, add one first. A service whose store sits behind a
+port needs no driver and no container at all. Do not move the assertions into a file named
+otherwise to avoid the sensor; the fix is the closure shape, not the file name.
 
 The tests prove: every entry has a class; per entry, the same key twice replays (FINAL, OUTCOME) or
 executes twice (RETRYABLE, any 5xx); FINAL replays with the header and the same key with another body
@@ -112,7 +149,12 @@ the template (a concurrent duplicate waiting on the key and replaying is the sto
 
 ## Gate
 
-The template is not compiled by this repo's `selftest` (neither are the other `templates/*` files).
-The proof when it changes: render it into a scratch module with the placeholders substituted and a
-toy in-memory adapter, `gofmt -l`, `go vet`, `go test -race` green, then red with a middleware that
-stores a RETRYABLE answer, one that drops an OUTCOME write, and an unclassified entry.
+`selftest` compiles and runs both templates (`internal/architecture/idempotency_template_test.go`,
+template-only: it skips in a scaffold). `go test ./internal/architecture/` renders them into a
+scratch module with `{{PKG}}`, `{{ROUTE}}`, `{{REUSED_SLUG}}` substituted and a toy in-memory
+middleware (`internal/architecture/testdata/idempotency/`): the wiring skeleton compiles against the
+verbatim test, `gofmt -l` is clean, `go vet` and `go test` are green, and the run goes red naming the
+right test when the toy stores a RETRYABLE answer, drops an OUTCOME write, or has an unclassified
+entry. A second test asserts the rendered files import the standard library only and that the
+Postgres sensor above finds nothing in them when they are named `*_integration_test.go`.
+Change the template, and that test is the proof.
