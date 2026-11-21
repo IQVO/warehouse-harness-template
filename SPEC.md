@@ -38,7 +38,12 @@ domain code of its own (the one exception is the shared, opt-in
 - `templates/idempotency/replay_classes_test.go.tmpl` (driver-free, verbatim) +
   `replay_classes_wiring_test.go.tmpl` (the repo's closures) + `docs/idempotency-replay-classes.md` — the
   reference test and adoption steps for the fleet's idempotency replay classes (FINAL, OUTCOME,
-  RETRYABLE; rule in `.claude/rules/fleet/idempotency-and-outbox.md`). Copy-and-adapt, not generated.
+  RETRYABLE; rule in `.claude/rules/fleet/idempotency-and-outbox.md`), including the in-flight duplicate
+  case. Copy-and-adapt, not generated.
+- `templates/architecture/agent_readonly_fitness_test.go.tmpl` + `agent_readonly_methods_fitness_test.go.tmpl`
+  (verbatim) + `agent_readonly_config_test.go.tmpl` (the repo's surfaces and allowlists) — the hardened sensor
+  for read-only MCP/A2A surfaces (import-path qualifiers, alias/dot refusal, write and raw-SQL methods, driver
+  ban, bite fixtures). Copy-and-adapt per repo, not generated and not managed.
 
 ## Events: CloudEvents 1.0 is MANDATORY
 

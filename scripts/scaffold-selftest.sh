@@ -123,6 +123,7 @@ if grep -n '{{' Dockerfile .dockerignore docs/before-first-release.md; then
   fail "a placeholder is left in a generated packaging file"
 fi
 grep -q 'charts/selftest-svc/' docs/before-first-release.md || fail "the checklist does not name charts/selftest-svc/"
+grep -q 'templates/architecture/agent_readonly_fitness_test.go.tmpl' docs/before-first-release.md || fail "the checklist does not name the read-only agent sensor template"
 grep -q 'selftest-svc-${CHART_VERSION}.tgz' .github/workflows/ci.yml || fail "ci.yml release job does not use the service's chart name"
 if grep -q 'inventory-storage-\${CHART_VERSION}' .github/workflows/ci.yml; then fail "ci.yml still packages inventory-storage-*.tgz"; fi
 grep -q 'for d in cmd/\*/' Dockerfile || fail "the Dockerfile does not build every cmd/*"
