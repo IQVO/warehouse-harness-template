@@ -1,10 +1,20 @@
 // Package fixture is a TOY Idempotency-Key middleware over an in-memory store. It exists only so the
 // harness selftest can compile and run templates/idempotency against something real: a correct
-// middleware (green) and three deliberately broken ones (red), chosen by TOY_MUTATION:
+// middleware (green) and deliberately broken ones (red), chosen by TOY_MUTATION:
 //
 //	store-retryable  a RETRYABLE answer is stored under the key instead of releasing it
 //	drop-outcome     an OUTCOME answer is stored but the command's writes are rolled back
 //	unclassified     one catalogue entry declares no replay class
+//	no-reread        an in-flight duplicate is answered without re-reading the key: its own
+//	                 unstored RETRYABLE refusal instead of the original's stored answer
+//
+// TOY_SHAPE picks which of the two fleet fixes for the in-flight duplicate the toy carries:
+//
+//	(unset)          re-read the key before answering an unstored refusal (material-flow-control
+//	                 cab4359, finishRefused); a copy reaches the handler and is replayed afterwards
+//	lock-at-begin    lock the key at the start of the unit and re-read under the lock
+//	                 (amr-fleet-control b8d0026, yard-management claim()); a copy never reaches the
+//	                 handler while the original holds the key
 package fixture
 
 import (
@@ -13,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 )
 
 // ProblemType is one entry of the toy catalogue.
@@ -57,24 +68,71 @@ type row struct {
 	ctype  string
 }
 
-// Store is the toy key store plus the committed writes.
+// Store is the toy key store plus the committed writes. Safe for concurrent use.
 type Store struct {
+	mu        sync.Mutex
 	rows      map[string]row
 	committed map[string]int
+	keyLocks  map[string]*sync.Mutex
 }
 
 // NewStore returns a clean store.
-func NewStore() *Store { return &Store{rows: map[string]row{}, committed: map[string]int{}} }
+func NewStore() *Store {
+	return &Store{rows: map[string]row{}, committed: map[string]int{}, keyLocks: map[string]*sync.Mutex{}}
+}
 
 // Committed counts committed writes tagged tag.
-func (s *Store) Committed(tag string) int { return s.committed[tag] }
+func (s *Store) Committed(tag string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.committed[tag]
+}
 
 // KeyRows counts the rows held for key.
 func (s *Store) KeyRows(key string) int {
-	if _, ok := s.rows[key]; ok {
+	if _, ok := s.lookup(key); ok {
 		return 1
 	}
 	return 0
+}
+
+func (s *Store) lookup(key string) (row, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.rows[key]
+	return r, ok
+}
+
+// lockKey takes the per-key lock (the toy's advisory key lock) and returns its unlock.
+func (s *Store) lockKey(key string) func() {
+	s.mu.Lock()
+	l, ok := s.keyLocks[key]
+	if !ok {
+		l = &sync.Mutex{}
+		s.keyLocks[key] = l
+	}
+	s.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// finish commits the writes and stores the answer in one step. A row stored meanwhile wins (the
+// request lost the race): it is returned and the caller replays it.
+func (s *Store) finish(key string, tx *Tx, commit, store bool, r row) (row, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev, ok := s.rows[key]; ok && store {
+		return prev, true
+	}
+	if commit {
+		for _, tag := range tx.tags {
+			s.committed[tag]++
+		}
+	}
+	if store {
+		s.rows[key] = r
+	}
+	return row{}, false
 }
 
 // capture buffers an answer so the middleware decides what to do with it, and carries the class mark.
@@ -117,9 +175,41 @@ func Refuse(w http.ResponseWriter, slug string) {
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
+// answerStored replays prev, or answers the reuse conflict for another body.
+func answerStored(w http.ResponseWriter, prev row, sum string) {
+	if prev.sum != sum {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"slug":"idempotency-key-reused"}`)
+		return
+	}
+	w.Header().Set("Content-Type", prev.ctype)
+	w.Header().Set("Idempotency-Replayed", "true")
+	w.WriteHeader(prev.status)
+	_, _ = io.WriteString(w, prev.body)
+}
+
+// decide is the class rule: whether the answer is stored and whether the writes commit.
+func decide(c *capture, mutation string) (store, commit bool) {
+	switch {
+	case c.status >= http.StatusInternalServerError:
+	case c.status < http.StatusMultipleChoices:
+		store, commit = true, true
+	case c.class == "RETRYABLE":
+		store = mutation == "store-retryable"
+	case c.class == "OUTCOME":
+		store, commit = true, mutation != "drop-outcome"
+	default:
+		store = c.class == "FINAL"
+	}
+	return store, commit
+}
+
 // RequireIdempotencyKey is the toy middleware.
 func RequireIdempotencyKey(s *Store) func(http.Handler) http.Handler {
 	mutation := os.Getenv("TOY_MUTATION")
+	lockAtBegin := os.Getenv("TOY_SHAPE") == "lock-at-begin"
+	reread := mutation != "no-reread"
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("Idempotency-Key")
@@ -129,45 +219,33 @@ func RequireIdempotencyKey(s *Store) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if prev, ok := s.rows[key]; ok {
-				if prev.sum != sum {
-					w.Header().Set("Content-Type", "application/problem+json")
-					w.WriteHeader(http.StatusConflict)
-					_, _ = io.WriteString(w, `{"slug":"idempotency-key-reused"}`)
+			if prev, ok := s.lookup(key); ok {
+				answerStored(w, prev, sum)
+				return
+			}
+			if lockAtBegin {
+				defer s.lockKey(key)()
+				if prev, ok := s.lookup(key); ok && reread { // the re-read under the key lock
+					answerStored(w, prev, sum)
 					return
 				}
-				w.Header().Set("Content-Type", prev.ctype)
-				w.Header().Set("Idempotency-Replayed", "true")
-				w.WriteHeader(prev.status)
-				_, _ = io.WriteString(w, prev.body)
-				return
 			}
 			tx := &Tx{}
 			c := &capture{hdr: http.Header{}}
-			r = r.WithContext(context.WithValue(r.Context(), txKey{}, tx))
-			next.ServeHTTP(c, r) // a panic leaves tx uncommitted and the key unstored
+			next.ServeHTTP(c, r.WithContext(context.WithValue(r.Context(), txKey{}, tx))) // a panic leaves tx uncommitted and the key unstored
 			if c.status == 0 {
 				c.status = http.StatusOK
 			}
-			store, commit := false, false
-			switch {
-			case c.status >= http.StatusInternalServerError:
-			case c.status < http.StatusMultipleChoices:
-				store, commit = true, true
-			case c.class == "RETRYABLE":
-				store = mutation == "store-retryable"
-			case c.class == "OUTCOME":
-				store, commit = true, mutation != "drop-outcome"
-			default:
-				store = c.class == "FINAL"
+			store, commit := decide(c, mutation)
+			if prev, lost := s.finish(key, tx, commit, store, row{body: c.body.String(), status: c.status, sum: sum, ctype: c.hdr.Get("Content-Type")}); lost {
+				answerStored(w, prev, sum)
+				return
 			}
-			if commit {
-				for _, tag := range tx.tags {
-					s.committed[tag]++
+			if !store && !lockAtBegin && reread { // the re-read before an unstored refusal
+				if prev, ok := s.lookup(key); ok {
+					answerStored(w, prev, sum)
+					return
 				}
-			}
-			if store {
-				s.rows[key] = row{body: c.body.String(), status: c.status, sum: sum, ctype: c.hdr.Get("Content-Type")}
 			}
 			for k, v := range c.hdr {
 				w.Header()[k] = v
