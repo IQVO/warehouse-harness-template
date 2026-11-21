@@ -1,0 +1,30 @@
+{{- if and .Values.mcp.enabled .Values.mcp.route.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agents-fixture.mcpFullname" . }}
+  labels:
+    {{- include "agents-fixture.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+  {{- with include "agents-fixture.kongPluginNames" . }}
+  annotations:
+    konghq.com/plugins: {{ . | quote }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.mcp.route.parentRefs | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.mcp.route.path }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /mcp
+      backendRefs:
+        - name: {{ include "agents-fixture.mcpFullname" . }}
+          port: {{ .Values.mcp.service.port }}
+{{- end }}

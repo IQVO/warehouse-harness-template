@@ -1,0 +1,90 @@
+{{- if and .Values.mcp.enabled (not (include "agents-fixture.agentsColocated" .)) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agents-fixture.mcpFullname" . }}
+  labels:
+    {{- include "agents-fixture.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+  annotations:
+    # Capacity step 3: on the flip to agents.colocate, ArgoCD deletes this Deployment only after the
+    # <release>-agents pod is Healthy. A Deployment-object annotation: syncing it does not roll the pod.
+    argocd.argoproj.io/sync-options: PruneLast=true
+spec:
+  replicas: {{ .Values.mcp.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agents-fixture.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mcp
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "agents-fixture.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mcp
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agents-fixture.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mcp
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "agents-fixture.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/mcp"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: MCP_ADDR
+              value: {{ .Values.mcp.httpAddr | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-mcp" (include "agents-fixture.fullname" .) | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agents-fixture.databaseSecretName" . }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- range .Values.mcp.extraEnv }}
+            - {{ toYaml . | nindent 14 | trim }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            # tcpSocket on the named port (order-management shape): the composition renames it too.
+            tcpSocket: {port: http}
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

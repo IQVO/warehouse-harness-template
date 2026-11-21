@@ -52,6 +52,11 @@ jobs:
           python3 scripts/harness/asyncapi_breaking.py --self-check
           python3 scripts/harness/test_asyncapi_breaking.py
           python3 scripts/harness/test_spec_breaking_render.py
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      - name: agents.colocate reference chart template (fixture chart, canonical test, refusal paths)
+        run: python3 tools/test_agents_colocation_template.py
       - name: Python scripts compile
         run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
       - name: Managed Go fitness tests build and pass
