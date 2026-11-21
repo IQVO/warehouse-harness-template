@@ -1,0 +1,20 @@
+{{- if .Values.a2a.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agents-fixture.a2aFullname" . }}
+  labels:
+    {{- include "agents-fixture.labels" . | nindent 4 }}
+    app.kubernetes.io/component: a2a
+spec:
+  type: {{ .Values.a2a.service.type }}
+  ports:
+    - port: {{ .Values.a2a.service.port }}
+      # agents.colocate: the shared pod names its ports mcp / a2a (two containers cannot both be "http").
+      targetPort: {{ ternary "a2a" "http" (eq (include "agents-fixture.agentsColocated" .) "true") }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "agents-fixture.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ ternary "agents" "a2a" (eq (include "agents-fixture.agentsColocated" .) "true") }}
+{{- end }}

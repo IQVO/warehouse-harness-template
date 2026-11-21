@@ -1,0 +1,20 @@
+{{- if .Values.mcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agents-fixture.mcpFullname" . }}
+  labels:
+    {{- include "agents-fixture.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  type: {{ .Values.mcp.service.type }}
+  ports:
+    - port: {{ .Values.mcp.service.port }}
+      # agents.colocate: the shared pod names its ports mcp / a2a (two containers cannot both be "http").
+      targetPort: {{ ternary "mcp" "http" (eq (include "agents-fixture.agentsColocated" .) "true") }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "agents-fixture.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ ternary "agents" "mcp" (eq (include "agents-fixture.agentsColocated" .) "true") }}
+{{- end }}

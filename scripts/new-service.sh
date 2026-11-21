@@ -252,7 +252,8 @@ fi
 # consumer groups / MCP / analytics / frontend the service has); instead the
 # "Before the first release" checklist is generated into docs/ and names every
 # packaging item with the sensor or CI job that guards it. Existing files are
-# never overwritten.
+# never overwritten. A chart with both mcp and a2a also ships the optional
+# single agents pod (agents.colocate): templates/packaging/charts/README.md.
 pkg_dir="templates/packaging"
 if [[ -d "${pkg_dir}" ]]; then
   for pair in "Dockerfile.tmpl:Dockerfile" "dockerignore.tmpl:.dockerignore"; do

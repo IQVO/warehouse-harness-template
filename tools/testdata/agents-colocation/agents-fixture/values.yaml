@@ -1,0 +1,82 @@
+image:
+  repository: ghcr.io/iqvo/agents-fixture
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+serviceAccount:
+  create: true
+  name: ""
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+terminationGracePeriodSeconds: 30
+database:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: DATABASE_URL
+config:
+  logLevel: info
+service:
+  type: ClusterIP
+  port: 8080
+gatewayApi:
+  enabled: false
+  parentRefs: []
+kongPlugins:
+  cors:
+    enabled: false
+    config: {}
+
+mcp:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8090"
+  service:
+    type: ClusterIP
+    port: 8090
+    targetPort: 8090
+  route:
+    enabled: false
+    path: /api/mcp/agents-fixture
+    parentRefs: []
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+  extraEnv: []
+
+a2a:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8093"
+  agentUrl: ""
+  # a2a drains longer than mcp in this fixture, so the composition's "larger grace period" rule is exercised.
+  terminationGracePeriodSeconds: 40
+  service:
+    type: ClusterIP
+    port: 8093
+    targetPort: 8093
+  route:
+    enabled: false
+    path: /api/a2a/agents-fixture
+    parentRefs: []
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+  extraEnv: []
+
+# Capacity step 3: true + mcp.enabled + a2a.enabled => cmd/mcp and cmd/a2a run as two containers of one
+# <release>-agents Deployment. The <release>-mcp / <release>-a2a Services keep their names and ports.
+# Off by default; warehouse-infra switches it on.
+agents:
+  colocate: false
+  # {} = the Kubernetes default (RollingUpdate 25%/25%: surge 1 / unavailable 0 at one replica).
+  strategy: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

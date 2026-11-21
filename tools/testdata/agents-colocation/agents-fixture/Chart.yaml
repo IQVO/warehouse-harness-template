@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agents-fixture
+description: Fixture chart for the agents.colocate reference template self-test (tools/test_agents_colocation_template.py). Fleet chart shape, cut down.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

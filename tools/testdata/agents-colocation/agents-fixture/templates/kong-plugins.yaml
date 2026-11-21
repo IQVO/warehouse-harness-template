@@ -1,0 +1,14 @@
+{{- range $name, $cfg := .Values.kongPlugins }}
+{{- if $cfg.enabled }}
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: {{ printf "%s-%s" (include "agents-fixture.fullname" $) $name }}
+  labels:
+    {{- include "agents-fixture.labels" $ | nindent 4 }}
+plugin: {{ $name }}
+config:
+  {{- toYaml $cfg.config | nindent 2 }}
+{{- end }}
+{{- end }}

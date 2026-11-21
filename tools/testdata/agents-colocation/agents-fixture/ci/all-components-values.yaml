@@ -1,0 +1,29 @@
+# Every optional component at once (api, mcp, a2a, routes, KongPlugins). Dummy values, nothing is dialled.
+database:
+  existingSecret: agents-fixture-db
+config:
+  logLevel: debug
+gatewayApi:
+  enabled: true
+  parentRefs:
+    - {name: warehouse-gateway, namespace: kong, sectionName: http}
+kongPlugins:
+  cors:
+    enabled: true
+    config: {origins: ["*"]}
+mcp:
+  enabled: true
+  route:
+    enabled: true
+    parentRefs:
+      - {name: warehouse-gateway, namespace: kong, sectionName: http}
+  extraEnv:
+    - {name: GOMAXPROCS, value: "1"}
+a2a:
+  enabled: true
+  route:
+    enabled: true
+    parentRefs:
+      - {name: warehouse-gateway, namespace: kong, sectionName: http}
+nodeSelector:
+  kubernetes.io/os: linux
