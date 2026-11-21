@@ -1,0 +1,15 @@
+package main
+
+import (
+	"context"
+
+	"example.com/agentfixture/internal/adapters/inbound/a2a"
+	"example.com/agentfixture/internal/adapters/outbound/postgres"
+	"example.com/agentfixture/internal/application/usecases"
+)
+
+func main() {
+	pool, _ := postgres.NewReadOnlyPool(context.Background(), "dsn")
+	defer pool.Close()
+	_ = a2a.NewAgent(usecases.NewReader(postgres.NewRobots(pool)))
+}

@@ -26,6 +26,12 @@ declared on its catalogue entry:
 - **Releasing a RETRYABLE key means a different body under the same key is a NEW request**, not
   `idempotency-key-reused`: nothing is left to compare against. Callers that reuse a key after a
   refusal on purpose now get their retry executed instead of the refusal back.
+- **An in-flight duplicate replays; it never answers its own unstored refusal.** A RETRYABLE (or
+  5xx) refusal is not stored and releases the key. So before the middleware answers an UNSTORED
+  refusal it re-reads the key. When the lock is taken at the start of the unit, it re-reads under
+  that lock before the handler runs. If the key is found, the request replays the stored answer
+  (another body gets `idempotency-key-reused`). N concurrent copies of one keyed request are one run
+  and N-1 replays. See "In-flight duplicates" below.
 
 ## Why
 
@@ -52,6 +58,10 @@ yard-management.
 4. **Make the middleware act on the marks**: RETRYABLE rolls the request back, key row included, and
    answers; OUTCOME commits the handler's writes together with the key row and the stored answer;
    2xx stores; 5xx and panics roll back and store nothing. Replays set `Idempotency-Replayed: true`.
+   Before answering an unstored refusal (RETRYABLE or 5xx), re-read the key and replay what is found.
+   When the key lock is taken at the start of the unit, re-read under it instead. A design that
+   claims the key row in the request transaction before the handler already does this (see
+   "In-flight duplicates").
 5. **Copy the two templates** to the package of the middleware. `replay_classes_test.go.tmpl`:
    substitute `{{PKG}}`, `{{ROUTE}}`, `{{REUSED_SLUG}}` and change nothing else; it imports the
    standard library only. `replay_classes_wiring_test.go.tmpl`: substitute `{{PKG}}` and implement
@@ -117,8 +127,51 @@ The tests prove: every entry has a class; per entry, the same key twice replays 
 executes twice (RETRYABLE, any 5xx); FINAL replays with the header and the same key with another body
 is the reuse conflict; OUTCOME commits its write once and a replay records nothing new; RETRYABLE
 releases the key (no row), the retry runs and then succeeds and is stored, and another body under the
-released key is a new request; 2xx is stored; 5xx and a panic are not. Concurrency is not covered by
-the template (a concurrent duplicate waiting on the key and replaying is the store's own test).
+released key is a new request; 2xx is stored; 5xx and a panic are not; and an in-flight duplicate
+replays the original's stored 2xx instead of answering its own RETRYABLE re-run
+(`TestConcurrentDuplicateReplaysTheOriginalsStoredAnswer`, below). That test calls the closures from
+several goroutines, so the store behind them must be safe for concurrent use: a real Postgres is, and
+an in-memory fake needs a mutex.
+
+### In-flight duplicates (the concurrent-duplicate case)
+
+**Defect** (fleet ledger P3-R15b / P4-R16, found in the asrs-control middleware lineage). A copy of a
+keyed request (same key, same body) passes the first key lookup while the original is still in
+flight. It waits, either on the key or on an aggregate lock the use case takes (a `FOR UPDATE` row,
+a flow lock, a unique index). Then the use case runs again against the state the original just
+committed. That re-run is a RETRYABLE refusal (`container-busy`, `concurrent-modification`,
+`not-in-clarification`). The refusal is not stored and the key is released, so the copy answers 409
+or 422 instead of the original's 201. The client did the right thing and still gets a refusal for a
+command that succeeded.
+
+**Rule.** Before answering an unstored refusal, the middleware re-reads the key. Found: replay the
+stored answer (another body: `idempotency-key-reused`). When the key lock is taken at the start of
+the unit, the re-read happens under that lock, before the handler runs. N copies are one run and N-1
+replays.
+
+**Reference fixes (patterns to copy).**
+
+| Shape | Where the re-read sits | Reference |
+|---|---|---|
+| Re-read before an unstored refusal | `finishRefused`: if the answer is not stored (RETRYABLE or 5xx), `Store.Lookup` the key first; found -> `replay`, else flush the refusal. This is the same as a re-read under the lock, because the refusal already rolled back its writes and hooks. | material-flow-control `cab4359` (branch `feature/material-flow-control-core`), `internal/adapters/inbound/http/idempotency.go` |
+| Re-read at the start of the unit | first statement inside `UoW.Do`: `Store.Lookup` under the serial/key lock; found -> lost race -> replay, before the use case runs | amr-fleet-control `b8d0026` (branch `feature/amr-fleet-control-core`), `internal/adapters/inbound/http/idempotency.go` |
+| Key claimed first | the key row (or an advisory key lock + re-read) is claimed inside the request transaction before the handler; a copy blocks on the key and replays | yard-management `claim()`; the claim-first stores (order-management lineage) need no change |
+
+Use both shapes when the lock is taken inside the use case and the lookup sits outside the unit (the
+asrs-control lineage). A middleware that stores every 4xx is immune only by accident: it becomes
+vulnerable when it adopts the replay classes, so adopt the re-read in the same change.
+
+**Test.** `TestConcurrentDuplicateReplaysTheOriginalsStoredAnswer` gates the original inside the
+handler, after its lookup and before its commit. It then sends three copies, the last one with
+another body. Each copy that reaches the handler waits until the original has answered, then
+refuses with the catalogue's first RETRYABLE entry, which is what a re-run against the original's
+committed state does. A design that blocks copies on the key never lets them into the handler; the
+test then releases the original after a short grace. The test asserts that every same-body copy
+replays the stored 201 with `Idempotency-Replayed: true`, that the other-body copy answers
+`idempotency-key-reused`, that the original's write is committed once, and that the key has one row.
+**Mutant it must kill:** remove the re-read (in `finishRefused`, or at the start of the unit). The
+copies then answer their own RETRYABLE refusal unreplayed. The selftest runs this mutant over both
+fix shapes (`no-reread` below).
 
 ## Per-design notes (phase 0, 40 repos read on 2026-11-18)
 
@@ -155,6 +208,8 @@ scratch module with `{{PKG}}`, `{{ROUTE}}`, `{{REUSED_SLUG}}` substituted and a 
 middleware (`internal/architecture/testdata/idempotency/`): the wiring skeleton compiles against the
 verbatim test, `gofmt -l` is clean, `go vet` and `go test` are green, and the run goes red naming the
 right test when the toy stores a RETRYABLE answer, drops an OUTCOME write, or has an unclassified
-entry. A second test asserts the rendered files import the standard library only and that the
+entry. The toy is green under both in-flight fixes (`TOY_SHAPE` unset: re-read before an unstored
+refusal; `TOY_SHAPE=lock-at-begin`: key lock and re-read at the start of the unit). With
+`TOY_MUTATION=no-reread`, each shape fails `TestConcurrentDuplicateReplaysTheOriginalsStoredAnswer`. A second test asserts the rendered files import the standard library only and that the
 Postgres sensor above finds nothing in them when they are named `*_integration_test.go`.
 Change the template, and that test is the proof.

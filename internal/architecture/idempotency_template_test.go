@@ -18,7 +18,10 @@ package architecture
 //   - TestIdempotencyTemplateCompilesAndBites: both templates render into a scratch module with a
 //     toy in-memory wiring (testdata/idempotency), gofmt/vet/test are green, and the test goes red,
 //     naming the right test, when the toy middleware stores a RETRYABLE answer, drops an OUTCOME
-//     write, or a catalogue entry has no class.
+//     write, or a catalogue entry has no class. The toy is green under BOTH fixes of the in-flight
+//     duplicate (TOY_SHAPE: re-read before an unstored refusal, material-flow-control cab4359; key
+//     lock + re-read at the start of the unit, amr-fleet-control b8d0026), and each shape goes red on
+//     TestConcurrentDuplicateReplaysTheOriginalsStoredAnswer when its re-read is removed (no-reread).
 
 import (
 	"bytes"
@@ -41,7 +44,7 @@ var idempotencyTemplates = []string{"replay_classes_test.go.tmpl", "replay_class
 // the assertions need. No database driver, no testcontainers, no module of the service.
 var idempotencyAllowedImports = map[string]bool{
 	"context": true, "io": true, "net/http": true, "net/http/httptest": true,
-	"strings": true, "testing": true,
+	"strings": true, "sync": true, "testing": true, "time": true,
 }
 
 func skipOutsideTemplate(t *testing.T) {
@@ -193,18 +196,25 @@ func TestIdempotencyTemplateCompilesAndBites(t *testing.T) {
 	if out, err := goIn(t, dir, nil, "vet", "./..."); err != nil {
 		t.Fatalf("go vet of the rendered template over the toy wiring:\n%s", out)
 	}
-	if out, err := goIn(t, dir, nil, "test", "./...", "-count=1"); err != nil {
-		t.Fatalf("the rendered template is red over a correct toy middleware:\n%s", out)
+	// Both fixes of the in-flight duplicate are green (the default shape re-reads before an unstored
+	// refusal; lock-at-begin re-reads under the key lock, so a copy never reaches the handler).
+	for _, shape := range []string{"", "lock-at-begin"} {
+		if out, err := goIn(t, dir, []string{"TOY_SHAPE=" + shape}, "test", "./...", "-count=1"); err != nil {
+			t.Fatalf("the rendered template is red over a correct toy middleware (TOY_SHAPE=%q):\n%s", shape, out)
+		}
 	}
 
-	for _, tc := range []struct{ mutation, wantFail string }{
-		{"store-retryable", "TestRetryableRefusalReleasesTheKeySoTheRetryExecutes"},
-		{"store-retryable", "TestEveryProblemTypeIsReplayedOrReExecutedByItsClass"},
-		{"drop-outcome", "TestOutcomeRefusalCommitsItsWritesOnceAndIsReplayed"},
-		{"unclassified", "TestEveryProblemTypeDeclaresAReplayClass"},
+	const inFlight = "TestConcurrentDuplicateReplaysTheOriginalsStoredAnswer"
+	for _, tc := range []struct{ mutation, shape, wantFail string }{
+		{"store-retryable", "", "TestRetryableRefusalReleasesTheKeySoTheRetryExecutes"},
+		{"store-retryable", "", "TestEveryProblemTypeIsReplayedOrReExecutedByItsClass"},
+		{"drop-outcome", "", "TestOutcomeRefusalCommitsItsWritesOnceAndIsReplayed"},
+		{"unclassified", "", "TestEveryProblemTypeDeclaresAReplayClass"},
+		{"no-reread", "", inFlight},              // cab4359 shape without its re-read in finishRefused
+		{"no-reread", "lock-at-begin", inFlight}, // b8d0026 shape without its re-read under the lock
 	} {
-		t.Run(tc.mutation+"/"+tc.wantFail, func(t *testing.T) {
-			out, err := goIn(t, dir, []string{"TOY_MUTATION=" + tc.mutation}, "test", "./...", "-count=1")
+		t.Run(tc.mutation+"/"+tc.shape+"/"+tc.wantFail, func(t *testing.T) {
+			out, err := goIn(t, dir, []string{"TOY_MUTATION=" + tc.mutation, "TOY_SHAPE=" + tc.shape}, "test", "./...", "-count=1")
 			if err == nil {
 				t.Fatalf("a toy middleware that %s passed the template:\n%s", tc.mutation, out)
 			}

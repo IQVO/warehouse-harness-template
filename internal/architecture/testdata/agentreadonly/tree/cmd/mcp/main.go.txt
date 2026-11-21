@@ -1,0 +1,20 @@
+package main
+
+import (
+	"context"
+
+	inboundmcp "example.com/agentfixture/internal/adapters/inbound/mcp"
+	"example.com/agentfixture/internal/adapters/outbound/postgres"
+	"example.com/agentfixture/internal/application/usecases"
+)
+
+func main() {
+	ctx := context.Background()
+	pool, err := postgres.NewReadOnlyPool(ctx, "dsn")
+	if err != nil {
+		panic(err)
+	}
+	defer pool.Close()
+	_ = pool.Ping(ctx)
+	_ = inboundmcp.NewServer(usecases.NewReader(postgres.NewRobots(pool)))
+}

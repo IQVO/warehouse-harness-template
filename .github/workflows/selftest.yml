@@ -63,6 +63,10 @@ jobs:
         run: |
           go vet ./internal/architecture/
           go test ./internal/architecture/
+      - name: Idempotency replay-class template (toy middleware under both in-flight fix shapes; four mutants red, incl. the re-read removed)
+        run: go test ./internal/architecture/ -count=1 -v -run 'TestIdempotencyTemplate'
+      - name: Agent read-only sensor template (rendered over a toy service; the five gaps planted red; sensor regressions caught by its bites)
+        run: go test ./internal/architecture/ -count=1 -v -run 'TestAgentReadOnlyTemplate|TestAgentReadOnlyConfigSkeleton'
       - name: Agent authority sensors (unmanaged copy; skip here, red/green on fixture trees)
         run: go test ./internal/architecture/ -count=1 -v -run 'TestEveryMCPToolDeclaresAuthority|TestMCPWriteToolsAreAtLeastL3|TestA2ASkillsDeclareAuthority|TestMCPServerOffersResourceAndPrompt|TestMCPAuthoritySensorBites|TestMCPWriteLevelSensorBites|TestA2AAuthoritySensorBites|TestMCPSurfaceSensorBites|TestAgentAdapterSkipRules'
       - name: Scaffold self-test (new-service.sh output; runtime and root-layout sensors red then green)

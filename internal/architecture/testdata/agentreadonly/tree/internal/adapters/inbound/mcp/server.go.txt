@@ -1,0 +1,28 @@
+package mcp
+
+import (
+	"context"
+	"errors"
+
+	"example.com/agentfixture/internal/application/usecases"
+)
+
+// Reads is the seam the MCP server is built over.
+type Reads interface {
+	Fleet(ctx context.Context, id string) (usecases.FleetView, error)
+	Robot(ctx context.Context, id string) (usecases.FleetView, error)
+}
+
+// Server answers read tools only.
+type Server struct{ reads Reads }
+
+// NewServer builds the server.
+func NewServer(r Reads) *Server { return &Server{reads: r} }
+
+func (s *Server) fleet(ctx context.Context, id string) (string, error) {
+	v, err := s.reads.Fleet(ctx, id)
+	if errors.Is(err, usecases.ErrFleetNotFound) {
+		return "not found", nil
+	}
+	return v.Name, err
+}

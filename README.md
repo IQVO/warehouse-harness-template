@@ -68,6 +68,12 @@ needs a `//authority:L4 ADR-<n> ...` comment. Details and the accepted
 declaration shape: HARNESS.md, "Agent authority declarations". The file is
 copied per repo in a rollout wave (it is not in `MANAGED`).
 
+A surface whose charter is read-only also adopts the read-only sensor template
+`templates/architecture/agent_readonly_*.go.tmpl` (two verbatim files plus the
+repo's config). It refuses write use cases, write and raw-SQL methods, alias
+and dot imports of guarded packages, and raw database drivers in the adapter
+and its `cmd/` root. See HARNESS.md, "Read-only agent surfaces".
+
 ## Local development / quality gate
 
 `make check` runs the template's self-test (the same target new services
