@@ -1,0 +1,73 @@
+// templates/architecture/agent_readonly_config_test.go.tmpl — the repo's half of the read-only agent
+// sensor (agent_readonly_fitness_test.go.tmpl and agent_readonly_methods_fitness_test.go.tmpl are
+// verbatim). Copy to internal/architecture/agent_readonly_config_test.go and fill every SEARCH-FOR.
+//
+// Adopt it only for a surface whose charter is READ-ONLY (its ADR says so, every tool is L1/L2). A
+// surface with write tools (L3/L4) is governed by mcp_authority_fitness_test.go instead.
+//
+// The defaults are strict on purpose: with empty allowlists every guarded identifier the surface
+// references is reported, which is the list to review. Allowlist a READ identifier only (a reader
+// constructor, a view type, a not-found error, the read-only pool); never a write use case, the unit
+// of work, the outbox, a lock or the idempotency store. Worked examples (fleet, 2026-11):
+// material-flow-control and amr-fleet-control internal/architecture/agent_readonly_fitness_test.go.
+//
+// The package's modulePath constant (architecture_test.go) is the module path both halves build
+// import paths from; it must be the module line of go.mod.
+package architecture
+
+// agentSurfaces is every read-only agent surface of the service. Delete the one it does not have;
+// a listed surface whose adapter or cmd/ directory is missing fails the sensor.
+var agentSurfaces = []agentSurface{
+	{name: "mcp", adapterDir: "../adapters/inbound/mcp", cmdDir: "../../cmd/mcp", reads: agentReads, forbidSibling: "/internal/adapters/inbound/a2a"},
+	{name: "a2a", adapterDir: "../adapters/inbound/a2a", cmdDir: "../../cmd/a2a", reads: agentReads, forbidSibling: "/internal/adapters/inbound/mcp"},
+}
+
+// agentReads is the exact method set of the adapter's `Reads` interface (the seam the adapter is
+// built over), checked wherever a file declares `type Reads interface`. SEARCH-FOR: the read
+// methods, for example {"Fleet", "Leg", "OpenLegs", "Robot"}. Leave it empty only if the adapter
+// declares no Reads seam.
+var agentReads = []string{}
+
+// agentGuardedPackages maps the import-path SUFFIX of each guarded package to its allowlist key. A
+// guarded package is referenced only through its own name (no alias, no dot import) and only for
+// the identifiers agentAllowedSelectors lists. Add every package that holds a write seam (a second
+// use-case package, a store adapter).
+var agentGuardedPackages = map[string]string{
+	"/internal/application/usecases":       "usecases",
+	"/internal/application/ports":          "ports",
+	"/internal/adapters/outbound/postgres": "postgres",
+}
+
+// agentAllowedSelectors maps an allowlist key to the identifiers agent sources may reference through
+// it. Anything else is a violation. SEARCH-FOR: the read identifiers, for example
+//
+//	"usecases": {"NewReader", "DefaultConfig", "Config", "FleetView", "ErrFleetNotFound"},
+//	"postgres": {"MigrationsURL", "RunMigrations", "NewReadOnlyPool", "NewRobots"},
+var agentAllowedSelectors = map[string][]string{
+	"usecases": {},
+	"ports":    {},
+	"postgres": {},
+}
+
+// agentForbiddenImports are import-path fragments no agent source may use, and why. A fragment
+// starting with "/" is relative to modulePath. Keep the fleet entries; add the service's own
+// write-side and device-side adapters (an outbound REST client of another context, MQTT, ...).
+var agentForbiddenImports = map[string]string{
+	"a2a-go/v2/a2aclient":                "an outbound A2A client (the agent only answers)",
+	"github.com/segmentio/kafka-go":      "Kafka: a read-only surface never dials Kafka",
+	"/internal/adapters/outbound/kafka":  "Kafka: a read-only surface publishes no fact",
+	"/internal/adapters/inbound/kafka":   "the fact consumers: only cmd/api consumes",
+	"/internal/adapters/outbound/outbox": "the outbox relay: a read-only surface never publishes",
+	"/internal/adapters/outbound/memory": "the in-memory test doubles (real Postgres only at runtime)",
+	"/internal/adapters/inbound/http":    "the REST adapter (the inbound adapters are siblings)",
+}
+
+// agentRepoWriteVerbs are this service's write METHODS on values an agent source can reach (the
+// write use cases and unit-of-work accessors of the use-case service a reader constructor returns),
+// refused on any value like the fleet verbs. SEARCH-FOR: for example {"RequestLeg", "CancelLeg",
+// "UnitOfWork", "AfterCommit"}.
+var agentRepoWriteVerbs = []string{}
+
+// agentWriteVerbAllowances maps an exact selector expression (types.ExprString) to why it is not a
+// write. Empty unless a real read needs a verb name; say why in the value.
+var agentWriteVerbAllowances = map[string]string{}

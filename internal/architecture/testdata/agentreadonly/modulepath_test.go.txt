@@ -1,0 +1,4 @@
+package architecture
+
+// modulePath stands for the constant every service declares in architecture_test.go.
+const modulePath = "example.com/agentfixture"

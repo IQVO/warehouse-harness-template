@@ -1,0 +1,19 @@
+package a2a
+
+import (
+	"context"
+
+	"example.com/agentfixture/internal/application/usecases"
+)
+
+// Reads is the seam the A2A agent is built over.
+type Reads interface {
+	Robot(ctx context.Context, id string) (usecases.FleetView, error)
+	Fleet(ctx context.Context, id string) (usecases.FleetView, error)
+}
+
+// Agent answers read skills only.
+type Agent struct{ reads Reads }
+
+// NewAgent builds the agent.
+func NewAgent(r Reads) *Agent { return &Agent{reads: r} }

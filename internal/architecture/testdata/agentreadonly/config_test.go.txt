@@ -1,0 +1,36 @@
+package architecture
+
+// The selftest's fixture config: a toy service with an MCP and an A2A read-only surface over a
+// usecases reader and a postgres read-only pool (shaped like amr-fleet-control).
+
+var agentSurfaces = []agentSurface{
+	{name: "mcp", adapterDir: "../adapters/inbound/mcp", cmdDir: "../../cmd/mcp", reads: agentReads, forbidSibling: "/internal/adapters/inbound/a2a"},
+	{name: "a2a", adapterDir: "../adapters/inbound/a2a", cmdDir: "../../cmd/a2a", reads: agentReads, forbidSibling: "/internal/adapters/inbound/mcp"},
+}
+
+var agentReads = []string{"Fleet", "Robot"}
+
+var agentGuardedPackages = map[string]string{
+	"/internal/application/usecases":       "usecases",
+	"/internal/application/ports":          "ports",
+	"/internal/adapters/outbound/postgres": "postgres",
+}
+
+var agentAllowedSelectors = map[string][]string{
+	"usecases": {"NewReader", "FleetView", "ErrFleetNotFound"},
+	"ports":    {},
+	"postgres": {"NewReadOnlyPool", "NewRobots"},
+}
+
+var agentForbiddenImports = map[string]string{
+	"a2a-go/v2/a2aclient":                "an outbound A2A client",
+	"github.com/segmentio/kafka-go":      "Kafka",
+	"/internal/adapters/outbound/kafka":  "Kafka",
+	"/internal/adapters/outbound/outbox": "the outbox relay",
+	"/internal/adapters/outbound/memory": "the in-memory test doubles",
+	"/internal/adapters/inbound/http":    "the REST adapter",
+}
+
+var agentRepoWriteVerbs = []string{"RequestLeg", "UnitOfWork"}
+
+var agentWriteVerbAllowances = map[string]string{}
