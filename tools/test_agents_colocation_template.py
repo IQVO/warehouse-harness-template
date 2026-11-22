@@ -10,7 +10,8 @@ templates/packaging/charts/README.md applied), then proves:
   4. the render REFUSES when the mcp and a2a pod specs differ, and the canonical test fails;
   5. the canonical test bites: a composition that keeps both ports named "http" fails it, and so does a
      standalone Deployment without the PruneLast or the sync-wave -1 annotation, or an agent pod that mounts
-     a chart ConfigMap still at wave 0.
+     a chart ConfigMap still at wave 0, or an mcp/a2a container without the preStop sleep, or a grace
+     period that does not exceed the sleep plus the HTTP drain.
 Needs helm (HELM overrides the binary) and PyYAML. Run from the template root:
   python3 tools/test_agents_colocation_template.py
 """
@@ -110,6 +111,19 @@ class AgentsColocationTemplate(unittest.TestCase):
         r = canonical(self.chart)
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("sync-wave", r.stdout)
+
+    def test_bites_without_prestop_sleep(self) -> None:
+        self.edit("templates/a2a-deployment.yaml", "          lifecycle:\n            preStop:\n              sleep:\n"
+                  "                seconds: 10\n", "")
+        r = canonical(self.chart)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("preStop", r.stdout)
+
+    def test_bites_when_grace_does_not_cover_sleep_plus_drain(self) -> None:
+        self.edit("values.yaml", "terminationGracePeriodSeconds: 30\n", "terminationGracePeriodSeconds: 20\n")
+        r = canonical(self.chart)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("terminationGracePeriodSeconds 20", r.stdout)
 
     def test_bites_when_a_consumed_configmap_syncs_after_the_pods(self) -> None:
         mount = ("      volumes:\n        - name: tmp\n          emptyDir: {}\n"
