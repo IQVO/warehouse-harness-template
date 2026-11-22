@@ -5,7 +5,9 @@ Canonical test, the same file in every chart that has both an mcp and an a2a com
 IQVO/warehouse-harness-template templates/packaging/charts/test_agents_colocation.py.tmpl). Only VALUES
 differs per repo: the chart's every-component values file (VALUES) and, when that file leaves the mcp/a2a
 routes off, the --set pairs that turn them on (EXTRA_SETS). Renders the chart three ways and asserts:
-  (a) flag off: the standalone mcp and a2a Deployments exist (PruneLast on both) and no -agents one;
+  (a) flag off: the standalone mcp and a2a Deployments exist (sync-wave -1 and PruneLast on both) and no
+      -agents one; every ConfigMap the chart renders that an mcp/a2a pod consumes (volume, envFrom,
+      configMapKeyRef) syncs at wave -2 or earlier, so a config change lands before the wave -1 pods roll;
   (b) flag on: exactly one -agents Deployment (sync-wave -1, PruneLast) whose containers mcp and a2a equal
       the flag-off containers except the port name (http -> mcp / a2a, probe port refs too); the -mcp and
       -a2a Services select only it and each named targetPort resolves to exactly one containerPort, the
@@ -41,6 +43,7 @@ BASE_SETS = ["mcp.enabled=true", "a2a.enabled=true"]
 HELM = os.environ.get("HELM", "helm")
 COMP = "app.kubernetes.io/component"
 PRUNE_LAST = ("argocd.argoproj.io/sync-options", "PruneLast=true")
+SYNC_WAVE = "argocd.argoproj.io/sync-wave"
 
 
 def render(*sets: str) -> list[dict]:
@@ -90,6 +93,30 @@ def resolve(service: dict, pod_spec: dict) -> list[list[int]]:
     return out
 
 
+def consumed_configmaps(pod_spec: dict) -> set[str]:
+    """Names of the ConfigMaps a pod reads: volumes (incl. projected), envFrom and configMapKeyRef."""
+    names: set[str] = set()
+    for v in pod_spec.get("volumes") or []:
+        if v.get("configMap"):
+            names.add(v["configMap"]["name"])
+        for src in (v.get("projected") or {}).get("sources") or []:
+            if src.get("configMap"):
+                names.add(src["configMap"]["name"])
+    for c in pod_spec.get("containers", []) + pod_spec.get("initContainers", []):
+        for ef in c.get("envFrom") or []:
+            if ef.get("configMapRef"):
+                names.add(ef["configMapRef"]["name"])
+        for e in c.get("env") or []:
+            ref = (e.get("valueFrom") or {}).get("configMapKeyRef")
+            if ref:
+                names.add(ref["name"])
+    return names
+
+
+def wave(doc: dict) -> int:
+    return int((doc["metadata"].get("annotations") or {}).get(SYNC_WAVE, "0"))
+
+
 def strip_argocd(doc: dict) -> dict:
     d = copy.deepcopy(doc)
     ann = d["metadata"].get("annotations") or {}
@@ -113,8 +140,18 @@ def main() -> int:
     if deployments(off, "agents") or any(k[1].endswith("-agents") for k in OFF):
         failures.append("(a) flag off renders an -agents object")
     for d in (mcp[0], a2a[0]):
-        if (d["metadata"].get("annotations") or {}).get(PRUNE_LAST[0]) != PRUNE_LAST[1]:
+        ann = d["metadata"].get("annotations") or {}
+        if ann.get(PRUNE_LAST[0]) != PRUNE_LAST[1]:
             failures.append(f"(a) {d['metadata']['name']} lacks the {PRUNE_LAST[0]}: {PRUNE_LAST[1]} annotation")
+        # Rollback (un-flip): the standalone Deployment must be Healthy before the wave-0 Services
+        # re-select it, or both agents answer 503 while the -agents pod is pruned.
+        if ann.get(SYNC_WAVE) != "-1":
+            failures.append(f"(a) {d['metadata']['name']} lacks the {SYNC_WAVE}: \"-1\" annotation")
+        for cm in sorted(consumed_configmaps(d["spec"]["template"]["spec"])):
+            doc = OFF.get(("ConfigMap", cm))
+            if doc is not None and wave(doc) > -2:
+                failures.append(f"(a) ConfigMap {cm} (read by {d['metadata']['name']}) syncs at wave {wave(doc)}: "
+                                f"want {SYNC_WAVE} \"-2\" or earlier, so it lands before the wave -1 pods roll")
 
     # (b) flag on
     agents = deployments(on, "agents")

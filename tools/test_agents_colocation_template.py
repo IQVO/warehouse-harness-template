@@ -9,7 +9,8 @@ templates/packaging/charts/README.md applied), then proves:
   3. with the flag off, adding agents-deployment.yaml changes nothing (the template is inert);
   4. the render REFUSES when the mcp and a2a pod specs differ, and the canonical test fails;
   5. the canonical test bites: a composition that keeps both ports named "http" fails it, and so does a
-     standalone Deployment without the PruneLast annotation.
+     standalone Deployment without the PruneLast or the sync-wave -1 annotation, or an agent pod that mounts
+     a chart ConfigMap still at wave 0.
 Needs helm (HELM overrides the binary) and PyYAML. Run from the template root:
   python3 tools/test_agents_colocation_template.py
 """
@@ -103,6 +104,25 @@ class AgentsColocationTemplate(unittest.TestCase):
         r = canonical(self.chart)
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("PruneLast", r.stdout)
+
+    def test_bites_without_standalone_sync_wave(self) -> None:
+        self.edit("templates/a2a-deployment.yaml", '    argocd.argoproj.io/sync-wave: "-1"\n', "")
+        r = canonical(self.chart)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("sync-wave", r.stdout)
+
+    def test_bites_when_a_consumed_configmap_syncs_after_the_pods(self) -> None:
+        mount = ("      volumes:\n        - name: tmp\n          emptyDir: {}\n"
+                 "        - name: config\n          configMap:\n"
+                 "            name: {{ include \"agents-fixture.fullname\" . }}\n")
+        self.edit("templates/mcp-deployment.yaml", "      volumes:\n        - name: tmp\n          emptyDir: {}\n", mount)
+        r = canonical(self.chart)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("ConfigMap", r.stdout)
+        self.edit("templates/configmap.yaml", "  labels:\n",
+                  "  annotations:\n    argocd.argoproj.io/sync-wave: \"-2\"\n  labels:\n")
+        r = canonical(self.chart)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

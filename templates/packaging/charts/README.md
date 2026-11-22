@@ -45,22 +45,32 @@ scale together) are recorded in the fleet ADR in `IQVO/warehouse-infra` `docs/ad
    ```
 3. `mcp-deployment.yaml` / `a2a-deployment.yaml`: guard the whole file with
    `{{- if and .Values.mcp.enabled (not (include "<p>.agentsColocated" .)) }}` (a2a likewise) and add
-   `argocd.argoproj.io/sync-options: PruneLast=true` to the Deployment `metadata.annotations` (the
-   object, not the pod template, so it does not roll the pod).
+   `argocd.argoproj.io/sync-wave: "-1"` and `argocd.argoproj.io/sync-options: PruneLast=true` to the
+   Deployment `metadata.annotations` (the object, not the pod template, so it does not roll the pod).
+   The wave closes the rollback gap: on an un-flip the standalone Deployments are recreated and Healthy
+   before the Services switch back (without it the asrs-control pilot drill measured one ~2-4 s 503 on
+   both agents). Side effect in every normal sync: mcp/a2a roll in wave -1, before the api (wave 0).
 4. `mcp-service.yaml` / `a2a-service.yaml`:
    `targetPort: {{ ternary "mcp" "http" (eq (include "<p>.agentsColocated" .) "true") }}` and selector
    `app.kubernetes.io/component: {{ ternary "agents" "mcp" (eq (include "<p>.agentsColocated" .) "true") }}`
    (`a2a` likewise). Name, port and labels stay.
-5. `tests/test_service_selectors.py`: add a colocated render (`--set agents.colocate=true`); both
+5. A ConfigMap the chart renders and an mcp/a2a pod CONSUMES (a volume, `envFrom`, `configMapKeyRef`):
+   add `argocd.argoproj.io/sync-wave: "-2"` to its metadata, or a config change rolls the wave -1 pods
+   before the new ConfigMap is applied and they boot on the old one. A checksum-only reference does not
+   need it. Same rule for a chart Secret if the chart renders it on the cluster.
+6. `tests/test_service_selectors.py`: add a colocated render (`--set agents.colocate=true`); both
    Services select the one `agents` Deployment there.
 
 The worked example is the self-test fixture `tools/testdata/agents-colocation/agents-fixture/`.
 `python3 tools/test_agents_colocation_template.py` proves the reference on it: the canonical test
 passes, the flag off is inert, the render refuses diverging pod specs, and the test fails when
-both ports stay `http` or PruneLast is missing.
+both ports stay `http`, PruneLast or the standalone sync-wave -1 is missing, or a consumed ConfigMap
+still syncs at wave 0.
 
 ## Cutover (ArgoCD, when infra flips the flag)
 
 The agents Deployment has a new name, so no immutable selector is patched. Wave -1 creates
 `<release>-agents` and waits for it to be Healthy; wave 0 re-points the Services (selector and
-named targetPort); PruneLast deletes the standalone Deployments last. Rollback: revert the flip.
+named targetPort); PruneLast deletes the standalone Deployments last. Rollback: revert the flip —
+wave -1 recreates the standalone Deployments and waits for them to be Healthy, wave 0 re-points the
+Services back, PruneLast deletes `<release>-agents` last. Both directions keep one ready backend.
