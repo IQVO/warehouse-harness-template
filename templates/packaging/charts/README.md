@@ -60,12 +60,29 @@ scale together) are recorded in the fleet ADR in `IQVO/warehouse-infra` `docs/ad
    need it. Same rule for a chart Secret if the chart renders it on the cluster.
 6. `tests/test_service_selectors.py`: add a colocated render (`--set agents.colocate=true`); both
    Services select the one `agents` Deployment there.
+7. `mcp-deployment.yaml` / `a2a-deployment.yaml`: give the container an endpoint-removal drain, right
+   after its `command:` line:
+   ```yaml
+             lifecycle:
+               preStop:
+                 sleep:
+                   seconds: 10
+   ```
+   Kong (KIC, DB-less) routes to pod IPs and drops a terminating pod only on its next config sync,
+   seconds later; `cmd/mcp` and `cmd/a2a` close their listener at SIGTERM and an idle process exits at
+   once, so without the delay Kong keeps sending to a vanished pod IP. Measured on asrs-control: every
+   plain roll cost one 502 or ≤5 s connect timeout through Kong, on MCP AND A2A (the a2a side was masked
+   in batch 1 only because the probe loop ran mcp first and its 5 s timeout swallowed the window). The
+   kubelet-native `sleep` action needs no shell (distroless); `cmd/api` has the same drain in-process
+   (`SHUTDOWN_DRAIN_DELAY`). Keep `terminationGracePeriodSeconds` above the sleep plus the 10 s HTTP
+   drain. The composition copies the containers verbatim, so the `-agents` pod inherits it.
 
 The worked example is the self-test fixture `tools/testdata/agents-colocation/agents-fixture/`.
 `python3 tools/test_agents_colocation_template.py` proves the reference on it: the canonical test
 passes, the flag off is inert, the render refuses diverging pod specs, and the test fails when
 both ports stay `http`, PruneLast or the standalone sync-wave -1 is missing, or a consumed ConfigMap
-still syncs at wave 0.
+still syncs at wave 0, or an mcp/a2a container lacks the preStop sleep, or the grace period does not
+exceed the sleep plus the HTTP drain.
 
 ## Cutover (ArgoCD, when infra flips the flag)
 
