@@ -8,7 +8,10 @@ metadata:
     app.kubernetes.io/component: mcp
   annotations:
     # Capacity step 3: on the flip to agents.colocate, ArgoCD deletes this Deployment only after the
-    # <release>-agents pod is Healthy. A Deployment-object annotation: syncing it does not roll the pod.
+    # <release>-agents pod is Healthy (PruneLast). On the un-flip (rollback) wave -1 recreates it and waits
+    # for it to be Healthy BEFORE the wave-0 Services switch back, so the rollback has no 503 window.
+    # Deployment-object annotations: syncing them does not roll the pod.
+    argocd.argoproj.io/sync-wave: "-1"
     argocd.argoproj.io/sync-options: PruneLast=true
 spec:
   replicas: {{ .Values.mcp.replicaCount }}
