@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
       - name: Hook tests (block/feedback rules, all three runtimes share this logic)
@@ -52,7 +52,7 @@ jobs:
           python3 scripts/harness/asyncapi_breaking.py --self-check
           python3 scripts/harness/test_asyncapi_breaking.py
           python3 scripts/harness/test_spec_breaking_render.py
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         with:
           version: v3.16.4
       - name: agents.colocate reference chart template (fixture chart, canonical test, refusal paths)
