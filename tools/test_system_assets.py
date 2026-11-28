@@ -65,7 +65,7 @@ def overlay() -> dict:
 
 def resolve(ix: dict, **over) -> list[str]:
     args = dict(app="demo", ix=ix, own=OWN, producers=PINS, rest_ops={"createThing"}, tools=set(), skills=set(),
-                use_cases={"CreateThing"}, ports=set(), publishes=["warehouse.demo.events"])
+                use_cases={"CreateThing"}, ports=set(), publishes=["warehouse.demo.events"], outbound=None)
     args.update(over)
     return B.resolve_interactions(**args)
 
@@ -82,7 +82,7 @@ class Resolver(unittest.TestCase):
         out = "\n".join(resolve(ix))
         self.assertIn("does not resolve", out)
         self.assertIn("NoSuchUseCase", out)
-        self.assertIn("target resolution", out)
+        self.assertIn("rest must target <producer>/openapi", out)
 
     def test_unmapped_published_and_consumed_events_fail_coverage(self):
         ix = overlay()
@@ -96,7 +96,57 @@ class Resolver(unittest.TestCase):
         ix = overlay()
         ix["subscriptions"][0]["operation"]["id"] = "ghost"
         self.assertIn("producer op 'ghost'", "\n".join(resolve(ix)))
-        self.assertIn("no pinned AsyncAPI contract", "\n".join(resolve(overlay(), producers={})))
+        self.assertIn("no AsyncAPI contract for producer", "\n".join(resolve(overlay(), producers={})))
+
+
+class FakeProducers:
+    """Stands in for build_system_bundle.Producers: rest / mcp / a2a contracts of the sibling `shop`."""
+
+    def rest(self, p):
+        return {"getItem": ("GET", "/items/{id}"), "reserve": ("POST", "/reservations")} if p == "shop" else None
+
+    def mcp(self, p):
+        return {"get_item": True, "reserve_item": False} if p == "shop" else None
+
+    def a2a(self, p):
+        return {"availability"} if p == "shop" else None
+
+
+def call(tech: str, asset: str, op_id: str, effect: str, **extra) -> dict:
+    return {"id": f"c-{op_id}", "technology": tech,
+            "operation": {"asset": asset, "id": op_id, "effect": effect, **extra},
+            "business": {"capability": "demo.things", "process": "thing-creation", "useCase": "CreateThing",
+                         "purpose": "Ask the shop.", "triggers": [{"kind": "api", "via": "rest", "ref": "createThing", "actor": "system"}]}}
+
+
+class OutboundCalls(unittest.TestCase):
+    def run_one(self, interaction: dict) -> str:
+        ix = overlay()
+        ix["interactions"].append(interaction)
+        return "\n".join(resolve(ix, outbound=FakeProducers()))
+
+    def test_correct_calls_resolve(self):
+        self.assertEqual(self.run_one(call("rest", "shop/openapi", "getItem", "read", rest={"method": "GET", "path": "/items/{id}"})), "")
+        self.assertEqual(self.run_one(call("rest", "shop/openapi", "reserve", "write", rest={"method": "POST", "path": "/reservations"})), "")
+        self.assertEqual(self.run_one(call("mcp", "shop/mcp", "get_item", "read", mcp={"primitive": "tool"})), "")
+        self.assertEqual(self.run_one(call("a2a", "shop/a2a", "availability", "read")), "")
+
+    def test_wrong_operation_locator_or_effect_fails(self):
+        self.assertIn("is not in the shop OpenAPI", self.run_one(call("rest", "shop/openapi", "ghost", "read", rest={"method": "GET", "path": "/x"})))
+        self.assertIn("rest locator", self.run_one(call("rest", "shop/openapi", "getItem", "read", rest={"method": "GET", "path": "/wrong"})))
+        self.assertIn("does not match HTTP POST", self.run_one(call("rest", "shop/openapi", "reserve", "read", rest={"method": "POST", "path": "/reservations"})))
+        self.assertIn("readOnlyHint", self.run_one(call("mcp", "shop/mcp", "reserve_item", "read", mcp={"primitive": "tool"})))
+        self.assertIn("is not served by shop-mcp", self.run_one(call("mcp", "shop/mcp", "ghost", "read")))
+        self.assertIn("not in the shop agent card", self.run_one(call("a2a", "shop/a2a", "ghost", "read")))
+
+    def test_unknown_producer_or_wrong_asset_kind_fails(self):
+        self.assertIn("no OpenAPI contract for 'other'", self.run_one(call("rest", "other/openapi", "getItem", "read")))
+        self.assertIn("must target <producer>/openapi", self.run_one(call("rest", "shop/asyncapi", "getItem", "read")))
+        self.assertIn("no producer index", "\n".join(resolve({**overlay(), "interactions": overlay()["interactions"] + [call("rest", "shop/openapi", "getItem", "read")]})))
+
+    def test_rest_ops_of_ignores_path_level_parameters(self):
+        doc = {"paths": {"/a/{id}": {"parameters": [{"name": "id"}], "get": {"operationId": "getA"}, "post": {"summary": "no id"}}}}
+        self.assertEqual(B.rest_ops_of(doc), {"getA": ("GET", "/a/{id}")})
 
 
 class AsyncIndex(unittest.TestCase):
