@@ -152,15 +152,13 @@ class SkillAndRule(unittest.TestCase):
         self.assertIn("system/<version>/", text)
 
     def test_skill_and_block_pass_guide_lint_in_a_service_shaped_repo(self):
-        """A service has no scripts/harness-health.py, tools/ or tools/system-assets: the shipped guide text must
-        not cite paths that exist only in the template (guide-lint went red in a real service once)."""
+        """The shipped guide text must pass guide-lint in the barest repo (no scripts/harness-health.py, no tools/, no
+        fleet rules: warehouse-console has none): it may cite no path that exists only somewhere else."""
         import subprocess
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / ".claude" / "skills" / "system-assets-release").mkdir(parents=True)
             (root / ".claude" / "skills" / "system-assets-release" / "SKILL.md").write_text(self.skill.read_text())
-            (root / ".claude" / "rules" / "fleet").mkdir(parents=True)  # every service carries the fleet rules
-            (root / ".claude" / "rules" / "fleet" / "context-boundaries.md").write_text("# rule\n")
             (root / "CLAUDE.md").write_text("# svc\n\n" + V4.SYSTEM_ASSETS_BLOCK)
             r = subprocess.run([sys.executable, str(TPL / "scripts" / "harness" / "guide_lint.py"), "--root", str(root)],
                                capture_output=True, text=True)
