@@ -147,6 +147,24 @@ def strip_examples(node: object) -> object:
     return node
 
 
+def schema_type_values(schema: object, schemas: dict, depth: int = 0) -> set[str]:
+    """CloudEvents types a payload schema pins through its `type` property: const/enum/default/example,
+    also inside allOf / oneOf / anyOf branches and $ref'd schemas (an envelope schema + a data schema)."""
+    out: set[str] = set()
+    if depth > 6 or not isinstance(schema, dict):
+        return out
+    if "$ref" in schema:
+        out |= schema_type_values(schemas.get(schema["$ref"].split("/")[-1]), schemas, depth + 1)
+    prop = (schema.get("properties") or {}).get("type")
+    if isinstance(prop, dict):
+        vals = [prop.get(k) for k in ("const", "default", "example")] + list(prop.get("enum") or []) + list(prop.get("examples") or [])
+        out |= {t for t in vals if isinstance(t, str) and CE_TYPE.fullmatch(t)}
+    for key in ("allOf", "oneOf", "anyOf"):
+        for branch in schema.get(key) or []:
+            out |= schema_type_values(branch, schemas, depth + 1)
+    return out
+
+
 def message_types(msg: dict, schemas: dict) -> set[str]:
     """The CloudEvents type(s) a message IS. Most specific evidence first:
     1. the top-level `type` of its example payloads, 2. the `type` property (const/enum/example/default)
@@ -158,15 +176,7 @@ def message_types(msg: dict, schemas: dict) -> set[str]:
             own.add(t)
     if own:
         return own
-    payload = msg.get("payload") or {}
-    ref = payload.get("$ref", "") if isinstance(payload, dict) else ""
-    schema = schemas.get(ref.split("/")[-1], payload) if ref else payload
-    prop = ((schema or {}).get("properties") or {}).get("type") if isinstance(schema, dict) else None
-    if isinstance(prop, dict):
-        for key in ("const", "default", "example"):
-            if isinstance(prop.get(key), str) and CE_TYPE.fullmatch(prop[key]):
-                own.add(prop[key])
-        own |= {t for t in (prop.get("enum") or []) + (prop.get("examples") or []) if isinstance(t, str) and CE_TYPE.fullmatch(t)}
+    own = schema_type_values(msg.get("payload"), schemas)
     return own or set(CE_TYPE.findall(json.dumps(strip_examples(msg))))
 
 
@@ -548,6 +558,10 @@ class Producers:
         return self._cache[key]
 
 
+def live_service_port(namespace: str, service: str) -> int:
+    return int(run("kubectl", "get", "svc", service, "-n", namespace, "-o", "jsonpath={.spec.ports[0].port}"))
+
+
 def service_exists(namespace: str, service: str) -> bool:
     res = subprocess.run(["kubectl", "get", "svc", service, "-n", namespace, "-o", "name"],
                          capture_output=True, text=True)
@@ -653,8 +667,11 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set
             ch = own.get(ev.get("channel"), {})
             if op.get("asset") != f"{app}/asyncapi" or op.get("effect") != "write":
                 v.append(f"{where}: event.publish must target {app}/asyncapi with effect write")
-            if op.get("id") not in ch.get("ops", set()) or ev.get("type") not in ch.get("types", set()):
-                v.append(f"{where}: {op.get('id')} / {ev.get('type')} not declared on {ev.get('channel')}")
+            no_ops = not ch.get("ops")  # spec gap: the channel exists and carries the type but declares no operation
+            if (op.get("id") is not None or not no_ops) and op.get("id") not in ch.get("ops", set()) \
+                    or ev.get("type") not in ch.get("types", set()):
+                v.append(f"{where}: {op.get('id')} / {ev.get('type')} not declared on {ev.get('channel')}"
+                         + (" (omit `id` only when the channel declares no operation at all)" if not no_ops else ""))
             covered_out.add((ev.get("channel"), ev.get("type")))
         else:
             v += outbound_violations(where, tech, op, outbound)
@@ -766,9 +783,14 @@ def build(args: argparse.Namespace) -> pathlib.Path:
     # An agent surface exists iff its Service is deployed: charts default mcp/a2a to disabled and the
     # platform values switch them on, so the chart alone cannot say. A deployed surface MUST be in the chart.
     surfaces = [s for s in ("mcp", "a2a") if service_exists(ns, f"{app}-{s}")]
+    ports: dict[str, int] = {}
+    drift = []  # runtime facts that break the standard; recorded in the bundle, fatal with --strict
     for s in surfaces:
-        if not (values.get(s) or {}).get("service"):
-            raise BuildError(f"{app}-{s} is deployed but charts/{app}/values.yaml has no {s}.service at {rel.tag}")
+        chart_port = ((values.get(s) or {}).get("service") or {}).get("port")
+        ports[s] = int(chart_port) if chart_port else live_service_port(ns, f"{app}-{s}")
+        if not chart_port:
+            drift.append(f"{app}-{s} is deployed but charts/{app}/values.yaml at {rel.tag} has no {s}.service "
+                         f"(port {ports[s]} read from the live Service)")
     images = verify_pods_run_commit(ns, app, rel.commit)
     for s in surfaces:
         images += verify_pods_run_commit(ns, f"{app}-{s}", rel.commit)
@@ -776,9 +798,8 @@ def build(args: argparse.Namespace) -> pathlib.Path:
           f"{sorted(set(images))}")
     card_name = server_card_name(app, sub["id"], ctx)
     init, primitives, agent_card, server_card = {}, {}, {}, {}
-    drift = []  # runtime facts that break the standard; recorded in the bundle, fatal with --strict
     if "mcp" in surfaces:
-        with port_forward(ns, f"{app}-mcp", int(values["mcp"]["service"]["port"])) as base:
+        with port_forward(ns, f"{app}-mcp", ports["mcp"]) as base:
             init, primitives = fetch_mcp(base, card_name)
         server_info = init.get("serverInfo", {})
         if server_info.get("version") != version:
@@ -786,10 +807,11 @@ def build(args: argparse.Namespace) -> pathlib.Path:
                          f"!= release {version} (MC-5)")
         if init["protocolVersion"] != MCP_PROTOCOL:
             drift.append(f"MCP server negotiates {init['protocolVersion']}, fleet target is {MCP_PROTOCOL}")
-        server_card = build_server_card(card_name, app, version, ctx["purpose"], values["mcp"]["route"]["path"],
+        server_card = build_server_card(card_name, app, version, ctx["purpose"],
+                                        ((values.get("mcp") or {}).get("route") or {}).get("path") or f"/api/mcp/{app}",
                                         init["protocolVersion"], website_url(app))
     if "a2a" in surfaces:
-        with port_forward(ns, f"{app}-a2a", int(values["a2a"]["service"]["port"])) as base:
+        with port_forward(ns, f"{app}-a2a", ports["a2a"]) as base:
             agent_card = fetch_agent_card(base)
         if agent_card.get("version") != version:
             drift.append(f"served A2A Agent Card version {agent_card.get('version')!r} != release {version} "

@@ -615,6 +615,11 @@ Build rules:
 - D-9 `build_system_bundle.py --check-overlay` validates the overlay against the release tag with no
   cluster access and writes nothing (mcp/a2a references stay unchecked until the real build).
 
+- D-10 A channel the spec declares without ANY operation (spec gap) is covered by `event.publish`
+  interactions with `operation.id: null`; an `id` is mandatory as soon as the channel declares one.
+  A surface that is deployed while the chart at the tag has no `<surface>.service` is built from the
+  live Service port and recorded in `release.drift`.
+
 ## Part E — Change rule: a contract change always yields a new asset
 
 A **contract change** is any change to what a context exposes or how it

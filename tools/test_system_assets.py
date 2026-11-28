@@ -254,6 +254,29 @@ class TypeExtraction(unittest.TestCase):
         self.assertEqual(B.async_channels(doc)["c"]["types"], {ETYPE})
 
 
+class AllOfSchemas(unittest.TestCase):
+    def test_type_pinned_in_an_allof_branch_of_a_referenced_schema_is_found(self):
+        schemas = {"Env": {"type": "object", "properties": {"specversion": {"const": "1.0"}}},
+                   "Evt": {"allOf": [{"$ref": "#/components/schemas/Env"}, {"properties": {"type": {"const": ETYPE}}}]}}
+        doc = {"asyncapi": "3.0.0", "components": {"schemas": schemas, "messages": {"M": {"payload": {"$ref": "#/components/schemas/Evt"}}}},
+               "channels": {"c1": {"address": "warehouse.demo.events", "messages": {"m": {"$ref": "#/components/messages/M"}}}},
+               "operations": {"sendDemo": {"action": "send", "channel": {"$ref": "#/channels/c1"}}}}
+        self.assertEqual(B.async_channels(doc)["warehouse.demo.events"], {"ops": {"sendDemo"}, "types": {ETYPE}})
+
+
+class ChannelWithoutOperations(unittest.TestCase):
+    def test_id_may_be_omitted_only_when_the_channel_declares_no_operation(self):
+        own = {"warehouse.demo.events": {"ops": {"receiveDemoEvents"}, "types": {ETYPE}},
+               "warehouse.demo.analytics": {"ops": set(), "types": {ETYPE}}, **{k: v for k, v in OWN.items() if "sibling" in k}}
+        ix = overlay()
+        ix["interactions"].append({**overlay()["interactions"][0], "id": "analytics-copy",
+                                   "operation": {"asset": "demo/asyncapi", "id": None, "effect": "write",
+                                                 "event": {"channel": "warehouse.demo.analytics", "type": ETYPE}}})
+        self.assertEqual(resolve(ix, own=own, publishes=["warehouse.demo.events", "warehouse.demo.analytics"]), [])
+        ix["interactions"][0]["operation"]["id"] = None  # channel HAS an operation: omitting is not allowed
+        self.assertIn("omit `id` only when", "\n".join(resolve(ix, own=own, publishes=["warehouse.demo.events", "warehouse.demo.analytics"])))
+
+
 class OwnChannels(unittest.TestCase):
     def test_analytics_twin_missing_from_the_catalogue_is_still_published(self):
         own = {"warehouse.x.events": {}, "warehouse.x.analytics": {}, "warehouse.sibling.events": {}}
