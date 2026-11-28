@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import copy
 import hashlib
 import json
 import os
@@ -304,7 +303,7 @@ def fetch_agent_card(base: str) -> dict:
 
 # --------------------------------------------------------------------------- ecosystem
 
-def ecosystem_context(app: str) -> tuple[dict, dict, list[str]]:
+def ecosystem_context(app: str) -> tuple[dict, dict, list[str], dict[str, str]]:
     run("git", "-C", str(ECOSYSTEM), "fetch", "--quiet", "origin")
     src = run("git", "-C", str(ECOSYSTEM), "show", "origin/develop:catalog.contexts.mjs")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
@@ -320,7 +319,8 @@ def ecosystem_context(app: str) -> tuple[dict, dict, list[str]]:
         raise BuildError(f"{app} is not in ecosystem catalog.contexts.mjs CONTEXTS")
     sub = dict(data["s"][ctx["subdomain"]], id=ctx["subdomain"])
     tags = derive_tags.derive_all().get(app, {}).get("tags", [])
-    return ctx, sub, tags
+    topic_owner = {t: name for name, c in data["c"].items() for t in c.get("topics", [])}
+    return ctx, sub, tags, topic_owner
 
 
 # --------------------------------------------------------------------------- documents
@@ -386,11 +386,144 @@ def build_server_card(card_name: str, app: str, version: str, purpose: str, rout
     return card
 
 
+# --------------------------------------------------------------------------- producer contracts
+
+HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
+
+
+def rest_ops_of(doc: dict) -> dict[str, tuple[str, str]]:
+    """operationId -> (METHOD, path) of one OpenAPI document (path items also carry `parameters:` arrays)."""
+    out: dict[str, tuple[str, str]] = {}
+    for path, item in (doc.get("paths") or {}).items():
+        for method, op in (item or {}).items():
+            if method in HTTP_METHODS and isinstance(op, dict) and op.get("operationId"):
+                out[op["operationId"]] = (method.upper(), path)
+    return out
+
+
+class Producers:
+    """Contracts of the contexts this app talks to, for resolving subscriptions and outbound calls.
+
+    Resolution order, per producer: the copy this repo pinned under an adapter's testdata at the release tag
+    (STANDARD A-5), else the producer's own contract at ITS latest GitHub release (read from its local clone).
+    MCP tools and A2A skills have no pinned copy anywhere, so they are read live from the producer's Services."""
+
+    def __init__(self, rel: "Release", namespace: str):
+        self.rel, self.ns = rel, namespace
+        self._cache: dict[tuple[str, str], object] = {}
+
+    def _pin(self, producer: str, kind: str) -> str | None:
+        want = f"{producer}.{kind}.yaml"
+        for p in sorted(self.rel.files):
+            if p.endswith("/testdata/" + want) and ("/inbound/" in p or "/outbound/" in p):
+                return self.rel.show(p)
+        return None
+
+    def _released(self, producer: str, path: str) -> tuple[str | None, str | None]:
+        clone = FLEET / producer
+        if not (clone / ".git").exists():
+            return None, None
+        run("git", "-C", str(clone), "fetch", "--quiet", "--tags", "origin")
+        try:
+            tag = run("gh", "release", "view", "-R", f"{GITHUB_ORG}/{producer}", "--json", "tagName",
+                      "--jq", ".tagName").strip()
+            return run("git", "-C", str(clone), "show", f"{tag}:{path}"), tag
+        except BuildError:
+            return None, None
+
+    def asyncapi(self, producer: str) -> dict | None:
+        key = (producer, "asyncapi")
+        if key not in self._cache:
+            text = self._pin(producer, "asyncapi") or self._released(producer, "apis/asyncapi.yaml")[0]
+            self._cache[key] = async_channels(yaml.safe_load(text)) if text else None
+        return self._cache[key]
+
+    def rest(self, producer: str) -> dict | None:
+        key = (producer, "openapi")
+        if key not in self._cache:
+            text = self._pin(producer, "openapi") or self._released(producer, "apis/openapi.yaml")[0]
+            self._cache[key] = rest_ops_of(yaml.safe_load(text)) if text else None
+        return self._cache[key]
+
+    def _live_port(self, producer: str, surface: str) -> int | None:
+        text, _ = self._released(producer, f"charts/{producer}/values.yaml")
+        return int(yaml.safe_load(text)[surface]["service"]["port"]) if text else None
+
+    def mcp(self, producer: str) -> dict | None:
+        """tool name -> readOnlyHint, from the producer's live MCP Service."""
+        key = (producer, "mcp")
+        if key not in self._cache:
+            self._cache[key] = None
+            port = self._live_port(producer, "mcp")
+            if port and service_exists(self.ns, f"{producer}-mcp"):
+                with port_forward(self.ns, f"{producer}-mcp", port) as base:
+                    _, prims = fetch_mcp(base, producer)
+                self._cache[key] = {t["name"]: bool((t.get("annotations") or {}).get("readOnlyHint"))
+                                    for t in prims["tools"]}
+        return self._cache[key]
+
+    def a2a(self, producer: str) -> set[str] | None:
+        key = (producer, "a2a")
+        if key not in self._cache:
+            self._cache[key] = None
+            port = self._live_port(producer, "a2a")
+            if port and service_exists(self.ns, f"{producer}-a2a"):
+                with port_forward(self.ns, f"{producer}-a2a", port) as base:
+                    self._cache[key] = {s["id"] for s in fetch_agent_card(base).get("skills", [])}
+        return self._cache[key]
+
+
+def service_exists(namespace: str, service: str) -> bool:
+    res = subprocess.run(["kubectl", "get", "svc", service, "-n", namespace, "-o", "name"],
+                         capture_output=True, text=True)
+    return res.returncode == 0
+
+
+def outbound_violations(where: str, tech: str, op: dict, producers: "Producers | None") -> list[str]:
+    """rest / mcp / a2a: the operation must exist in the producer's contract and its effect must match."""
+    kind = {"rest": "openapi", "mcp": "mcp", "a2a": "a2a"}[tech]
+    asset = op.get("asset", "")
+    producer = asset.removesuffix("/" + kind)
+    if not asset.endswith("/" + kind) or not producer:
+        return [f"{where}: {tech} must target <producer>/{kind}, got {asset!r}"]
+    if producers is None:
+        return [f"{where}: no producer index available to resolve {asset}"]
+    if tech == "rest":
+        ops = producers.rest(producer)
+        if ops is None:
+            return [f"{where}: no OpenAPI contract for {producer!r}: neither pinned in this repo nor in a local clone with a release"]
+        if op.get("id") not in ops:
+            return [f"{where}: operationId {op.get('id')!r} is not in the {producer} OpenAPI contract"]
+        method, path = ops[op["id"]]
+        loc = op.get("rest") or {}
+        v = []
+        if (loc.get("method"), loc.get("path")) != (method, path):
+            v.append(f"{where}: rest locator {loc.get('method')} {loc.get('path')} != {method} {path} in the contract")
+        if op.get("effect") != ("read" if method in ("GET", "HEAD") else "write"):
+            v.append(f"{where}: effect {op.get('effect')!r} does not match HTTP {method} (O-2)")
+        return v
+    if tech == "mcp":
+        tools = producers.mcp(producer)
+        if tools is None:
+            return [f"{where}: {producer}-mcp is not running (cannot read its tools)"]
+        if op.get("id") not in tools:
+            return [f"{where}: tool {op.get('id')!r} is not served by {producer}-mcp"]
+        if op.get("effect") != ("read" if tools[op["id"]] else "write"):
+            return [f"{where}: effect {op.get('effect')!r} does not match readOnlyHint of {op['id']} (O-2)"]
+        return []
+    skills = producers.a2a(producer)
+    if skills is None:
+        return [f"{where}: {producer}-a2a is not running (cannot read its agent card)"]
+    return [] if op.get("id") in skills else [f"{where}: skill {op.get('id')!r} is not in the {producer} agent card"]
+
+
 # --------------------------------------------------------------------------- interaction resolution
 
-def resolve_interactions(app: str, ix: dict, own: dict, producers: dict, rest_ops: set[str],
+def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set[str],
                          tools: set[str], skills: set[str], use_cases: set[str], ports: set[str],
-                         publishes: list[str]) -> list[str]:
+                         publishes: list[str], outbound: "Producers | None" = None) -> list[str]:
+    """`producers`: dict {context: channels} (tests) or a callable context -> channels | None."""
+    lookup = producers.get if isinstance(producers, dict) else producers
     v: list[str] = []
     consumed: set[str] = set()
     covered_in: set[tuple[str, str]] = set()
@@ -399,9 +532,10 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers: dict, rest_op
         producer = op.get("asset", "").removesuffix("/asyncapi")
         ev = op.get("event", {})
         ch = ev.get("channel")
-        pin = producers.get(producer)
+        pin = lookup(producer)
         if pin is None:
-            v.append(f"{where}: no pinned AsyncAPI contract for producer {producer!r} (A-5)")
+            v.append(f"{where}: no AsyncAPI contract for producer {producer!r}: neither pinned in this repo "
+                     "(A-5) nor in a local clone with a GitHub release")
             continue
         if op.get("id") not in pin.get(ch, {}).get("ops", set()):
             v.append(f"{where}: producer op {op.get('id')!r} is not on {ch} in the pinned {producer} contract")
@@ -441,8 +575,7 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers: dict, rest_op
                 v.append(f"{where}: {op.get('id')} / {ev.get('type')} not declared on {ev.get('channel')}")
             covered_out.add((ev.get("channel"), ev.get("type")))
         else:
-            v.append(f"{where}: {tech} target resolution needs the producer's pinned asset; "
-                     "not implemented yet for outbound {tech} calls")
+            v += outbound_violations(where, tech, op, outbound)
         if b.get("useCase") not in use_cases:
             v.append(f"{where}: use case {b.get('useCase')!r} not in internal/application/usecases (C-2)")
         v += [f"{where}: business.{k} is required" for k in ("capability", "process", "purpose", "triggers")
@@ -495,58 +628,62 @@ def build(args: argparse.Namespace) -> pathlib.Path:
     chart = rel.check_chart()
     print(f"[2/6] released chart {OCI}/{app}:{chart['version']} ok")
 
-    ctx, sub, tags = ecosystem_context(app)
+    ctx, sub, tags, _topic_owner = ecosystem_context(app)
     print(f"[3/6] ecosystem: subdomain {sub['id']}, {ctx['classification']}, {len(tags)} tags")
 
     values = rel.yaml(f"charts/{app}/values.yaml")
-    for surface in ("mcp", "a2a"):
-        if not (values.get(surface) or {}).get("service"):
-            raise BuildError(f"charts/{app}/values.yaml has no {surface}.service: this builder covers contexts "
-                             "that ship REST + events + MCP + A2A; extend it before onboarding this app")
-    mcp_path = values["mcp"]["route"]["path"]
     ns = args.namespace
-    images = verify_pods_run_commit(ns, f"{app}-mcp", rel.commit) + \
-        verify_pods_run_commit(ns, f"{app}-a2a", rel.commit)
-    print(f"[4/6] cluster runs the release: {sorted(set(images))}")
+    # An agent surface exists iff its Service is deployed: charts default mcp/a2a to disabled and the
+    # platform values switch them on, so the chart alone cannot say. A deployed surface MUST be in the chart.
+    surfaces = [s for s in ("mcp", "a2a") if service_exists(ns, f"{app}-{s}")]
+    for s in surfaces:
+        if not (values.get(s) or {}).get("service"):
+            raise BuildError(f"{app}-{s} is deployed but charts/{app}/values.yaml has no {s}.service at {rel.tag}")
+    images = verify_pods_run_commit(ns, app, rel.commit)
+    for s in surfaces:
+        images += verify_pods_run_commit(ns, f"{app}-{s}", rel.commit)
+    print(f"[4/6] cluster runs the release ({'REST+events' + ''.join('+' + s.upper() for s in surfaces)}): "
+          f"{sorted(set(images))}")
     card_name = server_card_name(app, sub["id"], ctx)
-    with port_forward(ns, f"{app}-mcp", int(values["mcp"]["service"]["port"])) as base:
-        init, primitives = fetch_mcp(base, card_name)
-    with port_forward(ns, f"{app}-a2a", int(values["a2a"]["service"]["port"])) as base:
-        agent_card = fetch_agent_card(base)
+    init, primitives, agent_card, server_card = {}, {}, {}, {}
     drift = []  # runtime facts that break the standard; recorded in the bundle, fatal with --strict
-    if agent_card.get("version") != version:
-        drift.append(f"served A2A Agent Card version {agent_card.get('version')!r} != release {version} "
-                     "(SERVICE_VERSION is rendered from the image tag)")
-    server_info = init.get("serverInfo", {})
-    if server_info.get("version") != version:
-        drift.append(f"MCP initialize serverInfo {server_info.get('name')}@{server_info.get('version')!r} "
-                     f"!= release {version} (MC-5)")
-    if init["protocolVersion"] != MCP_PROTOCOL:
-        drift.append(f"MCP server negotiates {init['protocolVersion']}, fleet target is {MCP_PROTOCOL}")
-    deployed_chart = deployed_chart_labels(ns, f"{app}-mcp")
+    if "mcp" in surfaces:
+        with port_forward(ns, f"{app}-mcp", int(values["mcp"]["service"]["port"])) as base:
+            init, primitives = fetch_mcp(base, card_name)
+        server_info = init.get("serverInfo", {})
+        if server_info.get("version") != version:
+            drift.append(f"MCP initialize serverInfo {server_info.get('name')}@{server_info.get('version')!r} "
+                         f"!= release {version} (MC-5)")
+        if init["protocolVersion"] != MCP_PROTOCOL:
+            drift.append(f"MCP server negotiates {init['protocolVersion']}, fleet target is {MCP_PROTOCOL}")
+        server_card = build_server_card(card_name, app, version, ctx["purpose"], values["mcp"]["route"]["path"],
+                                        init["protocolVersion"], website_url(app))
+    if "a2a" in surfaces:
+        with port_forward(ns, f"{app}-a2a", int(values["a2a"]["service"]["port"])) as base:
+            agent_card = fetch_agent_card(base)
+        if agent_card.get("version") != version:
+            drift.append(f"served A2A Agent Card version {agent_card.get('version')!r} != release {version} "
+                         "(SERVICE_VERSION is rendered from the image tag)")
+    deployed_chart = deployed_chart_labels(ns, app)
     if deployed_chart != f"{app}-{version}":
         drift.append(f"cluster runs chart {deployed_chart!r}, not the released chart {app}-{version}")
     if drift and args.strict:
         raise BuildError("runtime drift (--strict):\n  - " + "\n  - ".join(drift))
     for d in drift:
         print(f"      drift: {d}")
-    server_card = build_server_card(card_name, app, version, ctx["purpose"], mcp_path,
-                                    init["protocolVersion"], website_url(app))
-    print(f"[5/6] live MCP: {len(primitives['tools'])} tools, {len(primitives['resources'])} resources, "
-          f"{len(primitives['prompts'])} prompts, protocol {init['protocolVersion']}; "
-          f"A2A card {len(agent_card.get('skills', []))} skills")
+    print(f"[5/6] live: MCP {len(primitives.get('tools', []))} tools "
+          f"({len(primitives.get('resources', []))} resources, {len(primitives.get('prompts', []))} prompts), "
+          f"A2A {len(agent_card.get('skills', []))} skills; surfaces absent: "
+          f"{[s for s in ('mcp', 'a2a') if s not in surfaces] or 'none'}")
 
     # contracts at the tag
     specs = {p.removeprefix("apis/"): rel.show(p) for p in sorted(rel.files)
              if re.fullmatch(r"apis/(openapi[\w-]*|asyncapi)\.yaml", p)}
     asyncapi = yaml.safe_load(specs["asyncapi.yaml"])
     own = async_channels(asyncapi)
-    producers = {pathlib.PurePosixPath(p).name.removesuffix(".asyncapi.yaml"): async_channels(rel.yaml(p))
-                 for p in rel.files if re.search(r"/testdata/[^/]+\.asyncapi\.yaml$", p)
-                 and "/inbound/" in p}
-    rest_ops = {op["operationId"] for name, doc in specs.items() if name.startswith("openapi")
-                for item in (yaml.safe_load(doc).get("paths") or {}).values()
-                for op in item.values() if isinstance(op, dict) and op.get("operationId")}
+    producers = Producers(rel, ns)
+    rest_ops = {op_id for name, doc in specs.items() if name.startswith("openapi")
+                for op_id in rest_ops_of(yaml.safe_load(doc))}
     overlay_path = pathlib.Path(args.overlay) if args.overlay else repo / "system" / OVERLAY_NAME
     if not overlay_path.exists():
         raise BuildError(f"no business overlay {overlay_path}: author it first (see the "
@@ -554,10 +691,10 @@ def build(args: argparse.Namespace) -> pathlib.Path:
     overlay_text = overlay_path.read_text()
     interactions = yaml.safe_load(overlay_text)
     violations = resolve_interactions(
-        app, interactions, own, producers, rest_ops,
-        {t["name"] for t in primitives["tools"]}, {s["id"] for s in agent_card.get("skills", [])},
+        app, interactions, own, producers.asyncapi, rest_ops,
+        {t["name"] for t in primitives.get("tools", [])}, {s["id"] for s in agent_card.get("skills", [])},
         rel.go_type_names("internal/application/usecases"), rel.go_type_names("internal/application/ports"),
-        ctx.get("topics", []))
+        ctx.get("topics", []), outbound=producers)
     for topic in ctx.get("topics", []):
         if topic not in own:
             violations.append(f"ecosystem topic {topic} is not a channel of apis/asyncapi.yaml at {rel.tag}")
@@ -582,25 +719,24 @@ def build(args: argparse.Namespace) -> pathlib.Path:
             {"id": f"{app}/asyncapi", "kind": "asyncapi", "path": "asyncapi/asyncapi.yaml",
              "spec": {"name": "asyncapi", "version": str(asyncapi["asyncapi"])},
              "version": str(asyncapi["info"]["version"]), "exposure": "kafka"},
-            {"id": f"{app}/mcp", "kind": "mcp",
-             "documents": {"serverCard": "mcp/server-card.json", "primitives": "mcp/primitives.json"},
-             "spec": {"name": "mcp", "version": init["protocolVersion"], "serverCard": "sep-2127"},
-             "version": version, "exposure": "agent-router"},
-            {"id": f"{app}/a2a", "kind": "a2a", "path": "a2a/agent-card.json",
-             "spec": {"name": "a2a", "version": "1.0.0"}, "version": version, "exposure": "agent-router"},
+            *([{"id": f"{app}/mcp", "kind": "mcp",
+                "documents": {"serverCard": "mcp/server-card.json", "primitives": "mcp/primitives.json"},
+                "spec": {"name": "mcp", "version": init["protocolVersion"], "serverCard": "sep-2127"},
+                "version": version, "exposure": "agent-router"}] if "mcp" in surfaces else []),
+            *([{"id": f"{app}/a2a", "kind": "a2a", "path": "a2a/agent-card.json",
+                "spec": {"name": "a2a", "version": "1.0.0"}, "version": version,
+                "exposure": "agent-router"}] if "a2a" in surfaces else []),
         ],
     }
-    ix = copy.deepcopy(interactions)
-    ix["application"] = "application.yaml"
-    header = f"# {app} {version} ({rel.tag}, {rel.commit[:7]}) - System Assets & Interaction Standard v0.3\n"
+    header = f"# {app} {version} ({rel.tag}, {rel.commit[:7]}) - System Assets & Interaction Standard v0.4\n"
     files = {
         "application.yaml": dump_yaml(application, header),
         "system-assets.yaml": dump_yaml(assets, header),
         "interactions.yaml": header + re.sub(r"(?m)^application: .*$", "application: application.yaml",
                                               overlay_text),
-        "mcp/server-card.json": dump_json(server_card),
-        "mcp/primitives.json": dump_json(primitives),
-        "a2a/agent-card.json": dump_json(agent_card),
+        **({"mcp/server-card.json": dump_json(server_card), "mcp/primitives.json": dump_json(primitives)}
+           if "mcp" in surfaces else {}),
+        **({"a2a/agent-card.json": dump_json(agent_card)} if "a2a" in surfaces else {}),
         # one folder per asset kind, like mcp/ and a2a/
         **{f"{name.split('.')[0].split('-')[0]}/{name}": doc for name, doc in specs.items()},
     }

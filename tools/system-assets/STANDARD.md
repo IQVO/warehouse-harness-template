@@ -592,6 +592,18 @@ Build rules:
   rebuild replaces the whole folder (staged then swapped), so no stale file
   from an earlier build survives.
 
+- D-5 Surfaces are optional per release: an `mcp` or `a2a` asset exists iff its Service
+  (`<app>-mcp`, `<app>-a2a`) is deployed (charts default both to disabled and the platform
+  values switch them on); a context with neither ships openapi + asyncapi only. The REST
+  Service `<app>` is always checked to run the release commit.
+- D-6 Producer contracts resolve in this order: the copy the repo pinned under an adapter
+  `testdata/<producer>.<kind>.yaml` at the tag (A-5), else the producer's own contract at ITS
+  latest GitHub release (local clone). MCP tools and A2A skills have no pinned copy anywhere:
+  they are read live from the producer's Services at build time.
+- D-7 Outbound `rest` interactions must match the producer operation (`operationId`, HTTP method
+  and path, `effect` read for GET/HEAD else write); `mcp` effect must match the tool's
+  `readOnlyHint`; `a2a` skill ids must be in the producer's agent card.
+
 ## Part E — Change rule: a contract change always yields a new asset
 
 A **contract change** is any change to what a context exposes or how it
