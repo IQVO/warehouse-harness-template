@@ -220,16 +220,24 @@ def deployed_chart_labels(namespace: str, service: str) -> str:
 
 
 class MCPClient:
-    """Minimal Streamable HTTP client: initialize, then paginated list calls."""
+    """Minimal Streamable HTTP client for both MCP generations the fleet has deployed.
+
+    * stateless (2026-07-28): no initialize and no session; every request carries `Mcp-Method` and
+      `_meta` with the protocol version and client capabilities; `server/discover` describes the server.
+    * stateful (<= 2025-11-25): `initialize` + `notifications/initialized` + `Mcp-Session-Id`.
+    initialize() tries stateless first and falls back, so one client reads every release."""
 
     def __init__(self, base: str):
         self.url, self.session, self.next_id = base.rstrip("/") + "/mcp", None, 0
 
     protocol = MCP_PROTOCOL
+    stateless = False
 
     def _post(self, payload: dict) -> dict | None:
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                    "MCP-Protocol-Version": self.protocol}
+        if self.stateless:
+            headers["Mcp-Method"] = payload["method"]
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, data=json.dumps(payload).encode(), headers=headers, method="POST")
@@ -257,9 +265,34 @@ class MCPClient:
 
     def call(self, method: str, params: dict | None = None) -> dict:
         self.next_id += 1
-        return self._post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params or {}})
+        params = dict(params or {})
+        if self.stateless:
+            params["_meta"] = {"io.modelcontextprotocol/protocolVersion": self.protocol,
+                               "io.modelcontextprotocol/clientCapabilities": {}}
+        return self._post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+
+    def _discover(self) -> dict:
+        """Stateless handshake: server/discover, shaped like an initialize result."""
+        self.stateless, self.protocol = True, MCP_PROTOCOL
+        try:
+            res = self.call("server/discover")
+        except BuildError:
+            self.stateless = False
+            raise
+        supported = res.get("supportedVersions") or [MCP_PROTOCOL]
+        if MCP_PROTOCOL not in supported:  # a stateful-generation server that merely answers discover
+            self.stateless = False
+            raise BuildError(f"server speaks {supported}, not {MCP_PROTOCOL}: use the stateful handshake")
+        self.protocol = MCP_PROTOCOL
+        info = (res.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+        return {"protocolVersion": self.protocol, "serverInfo": info, "capabilities": res.get("capabilities") or {},
+                "supportedVersions": supported}
 
     def initialize(self) -> dict:
+        try:
+            return self._discover()
+        except BuildError:  # a stateful release does not know server/discover
+            self.protocol = MCP_PROTOCOL
         params = {"capabilities": {}, "clientInfo": {"name": "system-bundle-builder", "version": "1"}}
         try:
             result = self.call("initialize", {"protocolVersion": self.protocol, **params})
@@ -583,7 +616,8 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set
         for t in b.get("triggers", []):
             kind, via, ref = t.get("kind"), t.get("via"), t.get("ref")
             ok = {("event", None): ref in consumed, ("api", "rest"): ref in rest_ops,
-                  ("api", "mcp"): ref in tools, ("api", "a2a"): ref in skills}.get((kind, via))
+                  ("api", "mcp"): ref in tools, ("api", "a2a"): ref in skills,
+                  ("schedule", None): bool(ref)}.get((kind, via))  # a scheduled job is named, not resolvable
             if ok is None or not t.get("actor"):
                 v.append(f"{where}: malformed trigger {t}")
             elif not ok:
