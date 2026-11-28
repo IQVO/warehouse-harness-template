@@ -137,13 +137,47 @@ class Release:
 
 # --------------------------------------------------------------------------- AsyncAPI 2.6 / 3.x index
 
+def strip_examples(node: object) -> object:
+    """Copy of an AsyncAPI node without `examples`: example payloads quote OTHER contexts' types
+    (a source_type, a rule's on_type) and must not count as the message's own type."""
+    if isinstance(node, dict):
+        return {k: strip_examples(v) for k, v in node.items() if k != "examples"}
+    if isinstance(node, list):
+        return [strip_examples(v) for v in node]
+    return node
+
+
+def message_types(msg: dict, schemas: dict) -> set[str]:
+    """The CloudEvents type(s) a message IS. Most specific evidence first:
+    1. the top-level `type` of its example payloads, 2. the `type` property (const/enum/example/default)
+    of its payload schema, 3. every type named anywhere in the message EXCEPT its examples."""
+    own: set[str] = set()
+    for ex in msg.get("examples") or []:
+        t = (ex.get("payload") or {}).get("type") if isinstance(ex, dict) and isinstance(ex.get("payload"), dict) else None
+        if isinstance(t, str) and CE_TYPE.fullmatch(t):
+            own.add(t)
+    if own:
+        return own
+    payload = msg.get("payload") or {}
+    ref = payload.get("$ref", "") if isinstance(payload, dict) else ""
+    schema = schemas.get(ref.split("/")[-1], payload) if ref else payload
+    prop = ((schema or {}).get("properties") or {}).get("type") if isinstance(schema, dict) else None
+    if isinstance(prop, dict):
+        for key in ("const", "default", "example"):
+            if isinstance(prop.get(key), str) and CE_TYPE.fullmatch(prop[key]):
+                own.add(prop[key])
+        own |= {t for t in (prop.get("enum") or []) + (prop.get("examples") or []) if isinstance(t, str) and CE_TYPE.fullmatch(t)}
+    return own or set(CE_TYPE.findall(json.dumps(strip_examples(msg))))
+
+
 def async_channels(doc: dict) -> dict[str, dict[str, set[str]]]:
     """channel -> {"ops": operation ids, "types": CloudEvents types of its messages}."""
     messages = (doc.get("components") or {}).get("messages") or {}
-    msg_types = {name: set(CE_TYPE.findall(json.dumps(m))) for name, m in messages.items()}
+    schemas = (doc.get("components") or {}).get("schemas") or {}
+    msg_types = {name: message_types(m, schemas) for name, m in messages.items() if isinstance(m, dict)}
 
     def types_of(node: object) -> set[str]:
-        raw = json.dumps(node)
+        raw = json.dumps(strip_examples(node))
         out = set(CE_TYPE.findall(raw))
         for ref in re.findall(r"#/components/messages/([A-Za-z0-9_.-]+)", raw):
             out |= msg_types.get(ref, set())
@@ -369,7 +403,15 @@ def website_url(app: str) -> str | None:
     return None
 
 
-def build_application(app: str, version: str, ctx: dict, sub: dict, tags: list[str], chart: dict) -> dict:
+def own_channels(topics: list[str], own: dict) -> list[str]:
+    """Channels this app PUBLISHES: its ecosystem topics plus any channel under the same topic prefix
+    (the ecosystem catalogue lists `.events` but often forgets the `.analytics` twin)."""
+    prefixes = {t.rsplit(".", 1)[0] + "." for t in topics}
+    return sorted(set(topics) | {c for c in own if any(c.startswith(p) for p in prefixes)})
+
+
+def build_application(app: str, version: str, ctx: dict, sub: dict, tags: list[str], chart: dict,
+                      own: dict) -> dict:
     return {
         "apiVersion": "warehouse/application/v1",
         "application": {
@@ -389,7 +431,7 @@ def build_application(app: str, version: str, ctx: dict, sub: dict, tags: list[s
             "classification": ctx["classification"],
             "tier": ctx["tier"],
             "purpose": ctx["purpose"],
-            "publishes": ctx.get("topics", []),
+            "publishes": own_channels(ctx.get("topics", []), own),
         },
         "tags": tags,
         "assets": "system-assets.yaml",
@@ -441,8 +483,8 @@ class Producers:
     (STANDARD A-5), else the producer's own contract at ITS latest GitHub release (read from its local clone).
     MCP tools and A2A skills have no pinned copy anywhere, so they are read live from the producer's Services."""
 
-    def __init__(self, rel: "Release", namespace: str):
-        self.rel, self.ns = rel, namespace
+    def __init__(self, rel: "Release", namespace: str, offline: bool = False):
+        self.rel, self.ns, self.offline = rel, namespace, offline
         self._cache: dict[tuple[str, str], object] = {}
 
     def _pin(self, producer: str, kind: str) -> str | None:
@@ -521,6 +563,8 @@ def outbound_violations(where: str, tech: str, op: dict, producers: "Producers |
         return [f"{where}: {tech} must target <producer>/{kind}, got {asset!r}"]
     if producers is None:
         return [f"{where}: no producer index available to resolve {asset}"]
+    if producers.offline and tech in ("mcp", "a2a"):
+        return []  # live surface of the producer: checked by the real build
     if tech == "rest":
         ops = producers.rest(producer)
         if ops is None:
@@ -553,7 +597,7 @@ def outbound_violations(where: str, tech: str, op: dict, producers: "Producers |
 # --------------------------------------------------------------------------- interaction resolution
 
 def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set[str],
-                         tools: set[str], skills: set[str], use_cases: set[str], ports: set[str],
+                         tools: "set[str] | None", skills: "set[str] | None", use_cases: set[str], ports: set[str],
                          publishes: list[str], outbound: "Producers | None" = None) -> list[str]:
     """`producers`: dict {context: channels} (tests) or a callable context -> channels | None."""
     lookup = producers.get if isinstance(producers, dict) else producers
@@ -590,6 +634,11 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set
 
     seen: set[str] = set()
     covered_out: set[tuple[str, str]] = set()
+    for nr in ix.get("declaredNotRaised", []):  # in the spec but raised by no code path at this release
+        ch = own.get(nr.get("channel"), {})
+        if nr.get("type") not in ch.get("types", set()) or not (nr.get("reason") or "").strip():
+            v.append(f"declaredNotRaised {nr.get('type')} on {nr.get('channel')}: must be a type of that channel and carry a reason")
+        covered_out.add((nr.get("channel"), nr.get("type")))
     for i in ix.get("interactions", []):
         where, op, b = f"interaction {i.get('id')}", i.get("operation", {}), i.get("business", {})
         if i.get("id") in seen:
@@ -616,7 +665,8 @@ def resolve_interactions(app: str, ix: dict, own: dict, producers, rest_ops: set
         for t in b.get("triggers", []):
             kind, via, ref = t.get("kind"), t.get("via"), t.get("ref")
             ok = {("event", None): ref in consumed, ("api", "rest"): ref in rest_ops,
-                  ("api", "mcp"): ref in tools, ("api", "a2a"): ref in skills,
+                  ("api", "mcp"): tools is None or ref in tools,  # None = offline check: unchecked
+                  ("api", "a2a"): skills is None or ref in skills,
                   ("schedule", None): bool(ref)}.get((kind, via))  # a scheduled job is named, not resolvable
             if ok is None or not t.get("actor"):
                 v.append(f"{where}: malformed trigger {t}")
@@ -651,6 +701,52 @@ def write_folder(dest: pathlib.Path, files: dict[str, str]) -> None:
     if dest.exists():
         shutil.rmtree(dest)
     staging.rename(dest)
+
+
+def load_contracts_and_resolve(args, repo, rel, ctx, ns, tools, skills):
+    """Contracts at the tag + the business overlay, resolved. tools/skills None = surface not read (offline
+    check, or a surface that is not deployed: mcp/a2a references then fail unless the check is offline)."""
+    specs = {p.removeprefix("apis/"): rel.show(p) for p in sorted(rel.files)
+             if re.fullmatch(r"apis/(openapi[\w-]*|asyncapi)\.yaml", p)}
+    asyncapi = yaml.safe_load(specs["asyncapi.yaml"])
+    own = async_channels(asyncapi)
+    producers = Producers(rel, ns, offline=args.check_overlay)
+    rest_ops = {op_id for name, doc in specs.items() if name.startswith("openapi")
+                for op_id in rest_ops_of(yaml.safe_load(doc))}
+    overlay_path = pathlib.Path(args.overlay) if args.overlay else repo / "system" / OVERLAY_NAME
+    if not overlay_path.exists():
+        raise BuildError(f"no business overlay {overlay_path}: author it first (see the "
+                         "system-assets-release skill and STANDARD.md Part B)")
+    overlay_text = overlay_path.read_text()
+    interactions = yaml.safe_load(overlay_text)
+    if not args.check_overlay:  # a surface that is not deployed has no tools/skills: references to it fail
+        tools = tools if tools is not None else set()
+        skills = skills if skills is not None else set()
+    violations = resolve_interactions(
+        args.app, interactions, own, producers.asyncapi, rest_ops, tools, skills,
+        rel.go_type_names("internal/application/usecases"), rel.go_type_names("internal/application/ports"),
+        own_channels(ctx.get("topics", []), own), outbound=producers)
+    for topic in ctx.get("topics", []):
+        if topic not in own:
+            violations.append(f"ecosystem topic {topic} is not a channel of apis/asyncapi.yaml at {rel.tag}")
+    if violations:
+        raise BuildError("interactions do not resolve against the release:\n  - " + "\n  - ".join(violations))
+    print(f"[6/6] interactions resolve: {len(interactions.get('interactions', []))} interactions, "
+          f"{len(interactions.get('subscriptions', []))} subscriptions"
+          + (" (offline: mcp/a2a references NOT checked)" if args.check_overlay else ""))
+    return specs, asyncapi, own, producers, overlay_text, interactions
+
+
+def check_overlay(args: argparse.Namespace) -> int:
+    """--check-overlay: validate the overlay against the release tag with NO cluster access and write nothing."""
+    app = args.app
+    repo = pathlib.Path(args.repo or FLEET / app).expanduser()
+    rel = Release(repo, app, args.version)
+    print(f"[1/6] release {rel.tag} = {rel.commit[:7]} ({app})")
+    ctx, _sub, _tags, _owners = ecosystem_context(app)
+    load_contracts_and_resolve(args, repo, rel, ctx, args.namespace, None, None)
+    print("OVERLAY OK (offline check): nothing written; run without --check-overlay once the cluster serves the release")
+    return 0
 
 
 def build(args: argparse.Namespace) -> pathlib.Path:
@@ -710,34 +806,11 @@ def build(args: argparse.Namespace) -> pathlib.Path:
           f"A2A {len(agent_card.get('skills', []))} skills; surfaces absent: "
           f"{[s for s in ('mcp', 'a2a') if s not in surfaces] or 'none'}")
 
-    # contracts at the tag
-    specs = {p.removeprefix("apis/"): rel.show(p) for p in sorted(rel.files)
-             if re.fullmatch(r"apis/(openapi[\w-]*|asyncapi)\.yaml", p)}
-    asyncapi = yaml.safe_load(specs["asyncapi.yaml"])
-    own = async_channels(asyncapi)
-    producers = Producers(rel, ns)
-    rest_ops = {op_id for name, doc in specs.items() if name.startswith("openapi")
-                for op_id in rest_ops_of(yaml.safe_load(doc))}
-    overlay_path = pathlib.Path(args.overlay) if args.overlay else repo / "system" / OVERLAY_NAME
-    if not overlay_path.exists():
-        raise BuildError(f"no business overlay {overlay_path}: author it first (see the "
-                         "system-assets-release skill and STANDARD.md Part B)")
-    overlay_text = overlay_path.read_text()
-    interactions = yaml.safe_load(overlay_text)
-    violations = resolve_interactions(
-        app, interactions, own, producers.asyncapi, rest_ops,
-        {t["name"] for t in primitives.get("tools", [])}, {s["id"] for s in agent_card.get("skills", [])},
-        rel.go_type_names("internal/application/usecases"), rel.go_type_names("internal/application/ports"),
-        ctx.get("topics", []), outbound=producers)
-    for topic in ctx.get("topics", []):
-        if topic not in own:
-            violations.append(f"ecosystem topic {topic} is not a channel of apis/asyncapi.yaml at {rel.tag}")
-    if violations:
-        raise BuildError("interactions do not resolve against the release:\n  - " + "\n  - ".join(violations))
-    print(f"[6/6] interactions resolve: {len(interactions.get('interactions', []))} interactions, "
-          f"{len(interactions.get('subscriptions', []))} subscriptions")
+    specs, asyncapi, own, producers, overlay_text, interactions = load_contracts_and_resolve(
+        args, repo, rel, ctx, ns, None if "mcp" not in surfaces else {t["name"] for t in primitives.get("tools", [])},
+        None if "a2a" not in surfaces else {s["id"] for s in agent_card.get("skills", [])})
 
-    application = build_application(app, version, ctx, sub, tags, chart)
+    application = build_application(app, version, ctx, sub, tags, chart, own)
     assets = {
         "apiVersion": "warehouse/system-assets/v1",
         "application": "application.yaml",
@@ -789,8 +862,13 @@ def main() -> int:
     ap.add_argument("--overlay", help=f"business overlay (default <repo>/system/{OVERLAY_NAME})")
     ap.add_argument("--namespace", default="warehouse-systems")
     ap.add_argument("--strict", action="store_true", help="fail on runtime drift instead of recording it")
+    ap.add_argument("--check-overlay", action="store_true",
+                    help="validate the overlay against the release tag only (no cluster, writes nothing; "
+                         "mcp/a2a references are not checked)")
     args = ap.parse_args()
     try:
+        if args.check_overlay:
+            return check_overlay(args)
         dest = build(args)
     except BuildError as e:
         print(f"BUILD FAILED: {e}", file=sys.stderr)

@@ -604,6 +604,17 @@ Build rules:
   and path, `effect` read for GET/HEAD else write); `mcp` effect must match the tool's
   `readOnlyHint`; `a2a` skill ids must be in the producer's agent card.
 
+- D-8 Overlay coverage: every CloudEvents type of every channel the context publishes needs an
+  `event.publish` interaction, every type of every other channel a subscription. A type that is in
+  the spec but raised by no code path at the release is listed under `declaredNotRaised`
+  (`channel`, `type`, `reason`), never invented as an interaction. A type is the message's OWN
+  type (example payload `type`, schema `type`, then prose): types quoted inside examples do not count.
+  Trigger kinds: `api` (via rest/mcp/a2a), `event`, `schedule` (ref = the named job). Transports with
+  no kind yet (MQTT/PLC telegrams) are written as `schedule` with the telegram as ref and flagged in
+  the overlay header; the standard needs a kind for them.
+- D-9 `build_system_bundle.py --check-overlay` validates the overlay against the release tag with no
+  cluster access and writes nothing (mcp/a2a references stay unchecked until the real build).
+
 ## Part E — Change rule: a contract change always yields a new asset
 
 A **contract change** is any change to what a context exposes or how it
