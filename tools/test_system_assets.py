@@ -13,10 +13,13 @@ Pins:
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 TPL = Path(__file__).resolve().parent.parent
@@ -84,6 +87,13 @@ class Resolver(unittest.TestCase):
         self.assertIn("NoSuchUseCase", out)
         self.assertIn("rest must target <producer>/openapi", out)
 
+    def test_a_scheduled_job_is_a_valid_named_trigger(self):
+        ix = overlay()
+        ix["interactions"][0]["business"]["triggers"].append({"kind": "schedule", "ref": "abandon-inactive-sweep", "actor": "system"})
+        self.assertEqual(resolve(ix), [])
+        ix["interactions"][0]["business"]["triggers"][-1]["ref"] = ""
+        self.assertIn("does not resolve", "\n".join(resolve(ix)))
+
     def test_unmapped_published_and_consumed_events_fail_coverage(self):
         ix = overlay()
         ix["interactions"] = []
@@ -147,6 +157,81 @@ class OutboundCalls(unittest.TestCase):
     def test_rest_ops_of_ignores_path_level_parameters(self):
         doc = {"paths": {"/a/{id}": {"parameters": [{"name": "id"}], "get": {"operationId": "getA"}, "post": {"summary": "no id"}}}}
         self.assertEqual(B.rest_ops_of(doc), {"getA": ("GET", "/a/{id}")})
+
+
+class FakeMCP(BaseHTTPRequestHandler):
+    """/mcp of a stateless (2026-07-28) or a stateful server, picked by the class attribute `stateless`."""
+    stateless = True
+    discover_versions = ["2026-07-28", "2025-11-25"]
+    seen: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def reply(self, code, obj, sse=False):
+        raw = ("event: message\ndata: " + json.dumps(obj) + "\n\n") if sse else json.dumps(obj)
+        self.send_response(code)
+        self.send_header("Content-Type", "text/event-stream" if sse else "application/json")
+        self.end_headers()
+        self.wfile.write(raw.encode())
+
+    def do_POST(self):
+        msg = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        method, meta = msg["method"], (msg.get("params") or {}).get("_meta") or {}
+        type(self).seen.append((method, self.headers.get("Mcp-Method"), meta))
+        if "id" not in msg:
+            return self.reply(202, {})
+        ok = lambda res: self.reply(200, {"jsonrpc": "2.0", "id": msg["id"], "result": res}, sse=self.stateless)
+        err = lambda code, text: self.reply(200, {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": code, "message": text}})
+        if self.stateless:
+            if self.headers.get("Mcp-Method") != method or "io.modelcontextprotocol/protocolVersion" not in meta \
+                    or "io.modelcontextprotocol/clientCapabilities" not in meta:
+                return self.reply(400, {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32602, "message": "missing _meta"}})
+            if method == "server/discover":
+                return ok({"supportedVersions": self.discover_versions, "capabilities": {"tools": {}},
+                           "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "demo-mcp", "version": "1.0.0"}}})
+        elif method == "server/discover":
+            if self.discover_versions == ["2025-11-25"]:  # answers discover but only speaks the stateful generation
+                return ok({"supportedVersions": ["2025-11-25"], "capabilities": {"tools": {}},
+                           "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "demo-mcp", "version": "1.0.0"}}})
+            return err(-32601, "method not found")
+        elif method == "initialize":
+            return ok({"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                       "serverInfo": {"name": "demo-mcp", "version": "1.0.0"}})
+        if method == "tools/list":
+            return ok({"tools": [{"name": "get_thing", "annotations": {"readOnlyHint": True}}]})
+        return err(-32601, "method not found")
+
+
+class MCPGenerations(unittest.TestCase):
+    def serve(self, stateless: bool, discover_versions=None) -> str:
+        handler = type("H", (FakeMCP,), {"stateless": stateless, "seen": [],
+                                         "discover_versions": discover_versions or ["2026-07-28", "2025-11-25"]})
+        srv = HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.handler = handler
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def test_stateless_server_is_read_with_discover_and_meta(self):
+        init, prims = B.fetch_mcp(self.serve(True), "com.warehouse.wes/demo")
+        self.assertEqual(init["protocolVersion"], "2026-07-28")
+        self.assertEqual(init["serverInfo"], {"name": "demo-mcp", "version": "1.0.0"})
+        self.assertEqual([t["name"] for t in prims["tools"]], ["get_thing"])
+        self.assertNotIn("initialize", [m for m, _, _ in self.handler.seen], "stateless servers have no initialize")
+
+    def test_server_that_answers_discover_with_old_versions_is_read_statefully(self):
+        init, prims = B.fetch_mcp(self.serve(False, ["2025-11-25"]), "com.warehouse.wes/demo")
+        self.assertEqual(init["protocolVersion"], "2025-11-25")
+        self.assertIn("initialize", [m for m, _, _ in self.handler.seen])
+        self.assertEqual([t["name"] for t in prims["tools"]], ["get_thing"])
+
+    def test_stateful_server_falls_back_to_initialize(self):
+        init, prims = B.fetch_mcp(self.serve(False), "com.warehouse.wes/demo")
+        self.assertEqual(init["protocolVersion"], "2025-11-25")
+        self.assertEqual([t["name"] for t in prims["tools"]], ["get_thing"])
+        self.assertIn("initialize", [m for m, _, _ in self.handler.seen])
 
 
 class AsyncIndex(unittest.TestCase):
