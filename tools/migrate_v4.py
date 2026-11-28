@@ -66,7 +66,7 @@ SYSTEM_ASSETS_BLOCK = (
     "context makes or an event it consumes is only done when the release that carries it has its folder "
     "`system/<version>/` on develop. Order: merge the change, release, deploy, then build the folder with the "
     "`system-assets-release` skill and PR it. Update `system/interactions.overlay.yaml` in the SAME PR as "
-    "the integration change. `scripts/harness-health.py` flags a release without its folder.\n"
+    "the integration change. The fleet `harness-health` report flags a release without its folder.\n"
     "<!-- harness:system-assets:end -->\n"
 )
 SYSTEM_ASSETS_RX = re.compile(r"<!-- harness:system-assets:start.*?<!-- harness:system-assets:end -->\n", re.S)

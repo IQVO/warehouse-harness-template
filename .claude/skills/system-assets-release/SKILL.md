@@ -20,7 +20,7 @@ The change is not finished until the release that carries it has its folder `sys
 3. Build `system/<version>/` from that release (below) and PR it into `develop`.
 
 A release with no contract change still gets its folder, so the version history has no gaps.
-`scripts/harness-health.py` flags a repo whose latest release has no folder.
+The fleet `harness-health` report flags a repo whose latest release has no folder.
 
 ## What the folder contains (plain files, never an archive)
 
