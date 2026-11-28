@@ -52,13 +52,15 @@ jobs:
           python3 scripts/harness/asyncapi_breaking.py --self-check
           python3 scripts/harness/test_asyncapi_breaking.py
           python3 scripts/harness/test_spec_breaking_render.py
+      - name: System assets builder (resolver bites, folder replace, skill + CLAUDE.md block pinned), PyYAML from the step above
+        run: python3 tools/test_system_assets.py
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         with:
           version: v3.16.4
       - name: agents.colocate reference chart template (fixture chart, canonical test, refusal paths)
         run: python3 tools/test_agents_colocation_template.py
       - name: Python scripts compile
-        run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py
+        run: python3 -m py_compile scripts/harness/*.py scripts/*.py tools/*.py tools/system-assets/*.py
       - name: Managed Go fitness tests build and pass
         run: |
           go vet ./internal/architecture/

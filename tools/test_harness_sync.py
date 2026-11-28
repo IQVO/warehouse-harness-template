@@ -137,6 +137,41 @@ class ScopedRulesBlock(unittest.TestCase):
         self.assertIn("`.claude/rules/offline-outbox.md`", f.block())
 
 
+class SystemAssetsRuleBlock(unittest.TestCase):
+    """migrate_v4 upserts the 'every contract change produces a new asset' block, idempotently."""
+
+    def setUp(self):
+        self.fx = []
+
+    def tearDown(self):
+        for f in self.fx:
+            f.close()
+
+    def fixture(self, *a, **k) -> Fixture:
+        f = Fixture(*a, **k)
+        self.fx.append(f)
+        return f
+
+    def test_block_lands_before_the_scoped_rules_block_and_is_idempotent(self):
+        f = self.fixture(go=False, rules={"offline-outbox.md": SCOPED})
+        f.run(V4)
+        text = f.claude()
+        self.assertEqual(text.count("harness:system-assets:start"), 1)
+        self.assertLess(text.index("harness:system-assets:start"), text.index("harness:scoped-rules:start"))
+        self.assertIn("`system-assets-release` skill", text)
+        self.assertTrue((f.root / ".claude/skills/system-assets-release/SKILL.md").is_file(), "skill was not copied")
+        self.assertNotIn("CLAUDE.md", f.run(V4, "--dry-run"), "system-assets block is not idempotent")
+
+    def test_a_stale_block_is_rewritten_in_place(self):
+        stale = ("# repo\n\n<!-- harness:system-assets:start (old) -->\nold words\n<!-- harness:system-assets:end -->\n\n## Commands\n")
+        f = self.fixture(go=False, rules={}, claude=stale)
+        f.run(V4)
+        text = f.claude()
+        self.assertNotIn("old words", text)
+        self.assertEqual(text.count("harness:system-assets:start"), 1)
+        self.assertLess(text.index("harness:system-assets:start"), text.index("## Commands"))
+
+
 class FleetRulesNamespace(unittest.TestCase):
     """The template carries the WAREHOUSE fleet rule set only; a retail-network repo's CloudEvents rule is its own
     variant (warehouse-docs agents/retailnetwork/). A fleet-wide sync would have overwritten it with the warehouse one."""
@@ -238,6 +273,34 @@ class HealthDriftLists(unittest.TestCase):
         got = set(self.health.managed_list())
         missing = [r for r in v4.V4_MANAGED if r not in got]
         self.assertEqual(missing, [], "harness-health ignores migrate_v4's V4_MANAGED files")
+
+    def _repo_with(self, d: str, files: dict) -> Path:
+        repo = Path(d)
+        git(repo, "init", "-q")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "init")
+        git(repo, "update-ref", "refs/remotes/origin/develop", "HEAD")
+        return repo
+
+    def test_release_without_its_system_folder_is_reported(self):
+        real_run = self.health.run
+        self.health.run = lambda cmd, cwd=None: "v2.0.5\n" if cmd[:3] == ["gh", "release", "view"] else real_run(cmd, cwd)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                repo = self._repo_with(d, {"system/2.0.4/system-assets.yaml": "x\n"})
+                files = set(git(repo, "ls-tree", "-r", "--name-only", "origin/develop").split())
+                self.assertEqual(self.health.system_missing(repo, files, "IQVO"), "2.0.5")
+                files.add("system/2.0.5/system-assets.yaml")
+                self.assertIsNone(self.health.system_missing(repo, files, "IQVO"))
+                self.assertIsNone(self.health.system_missing(repo, {"README.md"}, "IQVO"),
+                                  "a repo with no system/ folder is not onboarded yet and must not be flagged")
+        finally:
+            self.health.run = real_run
 
     def test_drifted_or_missing_incidents_is_reported(self):
         with tempfile.TemporaryDirectory() as d:

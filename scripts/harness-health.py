@@ -11,6 +11,8 @@ harness-health adds the checks that catch those, per repo, from origin/develop +
   ci       guide-lint job, repo_lint config sensors (cfg), ai-review workflow, make check-fast
   sync     managed files identical to this template (-N = N files drifted; the weekly sync opens the PR):
            migrate_v3's MANAGED (+ GS1 copies) and migrate_v4's V4_MANAGED (INCIDENTS.md, review agents)
+  system   latest GitHub release has its system/<version>/ folder on develop (only repos that already carry
+           a system/ folder are checked; contract change = new asset, see the system-assets-release skill)
   runtime  last scheduled run per workflow (green/red), open harness:red issues
   version  harness-template: vN recorded in AGENTS.md
 
@@ -110,11 +112,25 @@ def managed_drift(repo: Path, files: set) -> list[str]:
     return drift
 
 
+def system_missing(repo: Path, files: set, org: str) -> str | None:
+    """The latest release version that has no system/<version>/ folder on develop, else None.
+
+    A repo with no system/ folder is not onboarded yet and is not flagged (the sync adds the skill first)."""
+    if not any(f.startswith("system/") for f in files):
+        return None
+    tag = run(["gh", "release", "view", "-R", f"{org}/{repo.name}", "--json", "tagName", "--jq", ".tagName"]).strip()
+    if not tag:
+        return None
+    version = tag.removeprefix("v")
+    return None if f"system/{version}/system-assets.yaml" in files else version
+
+
 def health(repo: Path, org: str, audit_mod) -> dict:
     files = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "origin/develop"]).splitlines()
     fs = set(files)
     out: dict = {"repo": repo.name}
     out["drift"] = managed_drift(repo, fs)
+    out["system_missing"] = system_missing(repo, fs, org)
 
     flat = [f for f in files if re.match(r"^\.claude/skills/[^/]+\.md$", f)]
     skill_dirs = sorted({f.split("/")[2] for f in files if re.match(r"^\.claude/skills/[^/]+/SKILL\.md$", f)})
@@ -192,10 +208,13 @@ def print_report(rows: list[dict]) -> None:
               f"{'Y' if r['ci']['ai-review'] else '-':<8}{'Y' if r['ci']['check-fast'] else '-':<6}"
               f"{sched:<8}{r['red_issues']:<6}{v}")
     print()
-    bad = [r for r in rows if r["skills_flat"] or r["red"] or r["drift"]]
+    bad = [r for r in rows if r["skills_flat"] or r["red"] or r["drift"] or r.get("system_missing")]
     for r in bad:
         if r["drift"]:
             print(f"  {r['repo']}: managed files drifted from the template: {', '.join(r['drift'])}")
+        if r.get("system_missing"):
+            print(f"  {r['repo']}: release {r['system_missing']} has no system/{r['system_missing']}/ folder "
+                  "on develop (contract change = new asset: system-assets-release skill)")
         if r["skills_flat"]:
             print(f"  {r['repo']}: {r['skills_flat']} flat skill file(s) that NO runtime loads")
         if r["red"]:
