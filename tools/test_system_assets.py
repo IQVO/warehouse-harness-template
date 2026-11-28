@@ -111,6 +111,7 @@ class Resolver(unittest.TestCase):
 
 class FakeProducers:
     """Stands in for build_system_bundle.Producers: rest / mcp / a2a contracts of the sibling `shop`."""
+    offline = False
 
     def rest(self, p):
         return {"getItem": ("GET", "/items/{id}"), "reserve": ("POST", "/reservations")} if p == "shop" else None
@@ -232,6 +233,49 @@ class MCPGenerations(unittest.TestCase):
         self.assertEqual(init["protocolVersion"], "2025-11-25")
         self.assertEqual([t["name"] for t in prims["tools"]], ["get_thing"])
         self.assertIn("initialize", [m for m, _, _ in self.handler.seen])
+
+
+class TypeExtraction(unittest.TestCase):
+    """A message's own CloudEvents type, not the types quoted in its examples or prose."""
+
+    def test_example_payload_type_beats_quoted_source_types(self):
+        quoted = "com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed"
+        msg = {"description": f"opened by a {quoted} fact", "examples": [{"payload": {"type": ETYPE, "data": {"source_type": quoted}}}]}
+        self.assertEqual(B.message_types(msg, {}), {ETYPE})
+
+    def test_payload_schema_type_const_then_prose_without_examples(self):
+        schemas = {"E": {"properties": {"type": {"const": ETYPE}}}}
+        self.assertEqual(B.message_types({"payload": {"$ref": "#/components/schemas/E"}}, schemas), {ETYPE})
+        self.assertEqual(B.message_types({"description": f"`type` = `{ETYPE}`", "examples": [{"payload": {"data": {"x": CTYPE}}}]}, {}), {ETYPE})
+
+    def test_channel_types_ignore_examples_of_inline_messages(self):
+        doc = {"asyncapi": "2.6.0", "channels": {"c": {"publish": {"operationId": "pubC", "message": {
+            "name": "M", "x-type": ETYPE, "examples": [{"payload": {"data": {"source_type": CTYPE}}}]}}}}}
+        self.assertEqual(B.async_channels(doc)["c"]["types"], {ETYPE})
+
+
+class OwnChannels(unittest.TestCase):
+    def test_analytics_twin_missing_from_the_catalogue_is_still_published(self):
+        own = {"warehouse.x.events": {}, "warehouse.x.analytics": {}, "warehouse.sibling.events": {}}
+        self.assertEqual(B.own_channels(["warehouse.x.events"], own), ["warehouse.x.analytics", "warehouse.x.events"])
+
+
+class NotRaised(unittest.TestCase):
+    def test_declared_not_raised_covers_a_spec_only_event_but_needs_a_reason(self):
+        own = {**OWN, "warehouse.demo.events": {"ops": {"receiveDemoEvents"}, "types": {ETYPE, "com.warehouse.wes.demo.thing.ThingGhost"}}}
+        ix = overlay()
+        self.assertIn("coverage: com.warehouse.wes.demo.thing.ThingGhost", "\n".join(resolve(ix, own=own)))
+        ix["declaredNotRaised"] = [{"channel": "warehouse.demo.events", "type": "com.warehouse.wes.demo.thing.ThingGhost",
+                                    "reason": "declared in the spec, raised by no code path at this release"}]
+        self.assertEqual(resolve(ix, own=own), [])
+        ix["declaredNotRaised"][0]["reason"] = ""
+        self.assertIn("carry a reason", "\n".join(resolve(ix, own=own)))
+
+    def test_offline_check_leaves_mcp_and_a2a_references_unchecked(self):
+        ix = overlay()
+        ix["interactions"][0]["business"]["triggers"].append({"kind": "api", "via": "mcp", "ref": "any_tool", "actor": "agent:x"})
+        self.assertIn("does not resolve", "\n".join(resolve(ix, tools=set())))
+        self.assertEqual(resolve(ix, tools=None), [])
 
 
 class AsyncIndex(unittest.TestCase):
